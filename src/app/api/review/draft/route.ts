@@ -4,6 +4,10 @@ import { businesses, reviewSessions } from "@/db/schema";
 import { draftReviewWithGemini, isGeminiConfigured } from "@/lib/gemini";
 import { draftReview } from "@/lib/reviewDraft";
 import { googleWriteReviewUrl } from "@/lib/qr";
+import {
+  buildNegativeReviewWhatsAppMessage,
+  whatsappChatUrl,
+} from "@/lib/whatsapp";
 import { formatAnswerForDisplay, type QuestionType } from "@/lib/questionTypes";
 import { desc, eq } from "drizzle-orm";
 
@@ -108,7 +112,15 @@ export async function POST(req: NextRequest) {
       ? googleWriteReviewUrl(business.googlePlaceId)
       : null;
 
-    return NextResponse.json({ draftText, sentiment, googleUrl });
+    const whatsappUrl =
+      sentiment === "negative" && business.whatsappNumber
+        ? whatsappChatUrl(
+            business.whatsappNumber,
+            buildNegativeReviewWhatsAppMessage(business.name, formatted)
+          )
+        : null;
+
+    return NextResponse.json({ draftText, sentiment, googleUrl, whatsappUrl });
   } catch (err) {
     console.error("Review draft route error:", err);
     return NextResponse.json(

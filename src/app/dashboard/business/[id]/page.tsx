@@ -17,6 +17,7 @@ type Business = {
   reviewThemes: string[] | null;
   logoUrl: string | null;
   googlePlaceId: string | null;
+  whatsappNumber: string | null;
   slug: string;
 };
 
@@ -44,6 +45,7 @@ export default function BusinessDetailPage({
   const [reviewThemesText, setReviewThemesText] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [googlePlaceId, setGooglePlaceId] = useState("");
+  const [whatsappNumber, setWhatsappNumber] = useState("");
   const [savingDetails, setSavingDetails] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [detailsMessage, setDetailsMessage] = useState<string | null>(null);
@@ -69,6 +71,7 @@ export default function BusinessDetailPage({
         setReviewThemesText(themesToText(data.business.reviewThemes));
         setLogoUrl(data.business.logoUrl ?? "");
         setGooglePlaceId(data.business.googlePlaceId ?? "");
+        setWhatsappNumber(data.business.whatsappNumber ?? "");
         setLoading(false);
       });
     fetch(`/api/businesses/${id}/questions`)
@@ -115,6 +118,7 @@ export default function BusinessDetailPage({
       reviewThemes: reviewThemesText,
       logoUrl,
       googlePlaceId,
+      whatsappNumber,
     };
 
     if (isNew) {
@@ -341,6 +345,22 @@ export default function BusinessDetailPage({
                 Place ID Finder
               </a>
               .
+            </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-ink/80">
+              WhatsApp number (management)
+            </label>
+            <input
+              className="input"
+              placeholder="+91 98765 43210"
+              value={whatsappNumber}
+              onChange={(e) => setWhatsappNumber(e.target.value)}
+              type="tel"
+            />
+            <p className="mt-1 text-xs text-ink/50">
+              Optional. Include country code. If a customer&apos;s review is negative, we show a
+              WhatsApp button so they can reach management directly before posting on Google.
             </p>
           </div>
           {detailsError && <p className="text-sm text-red-600">{detailsError}</p>}

@@ -33,6 +33,8 @@ export const businesses = pgTable("businesses", {
   reviewThemes: jsonb("review_themes").$type<string[]>(),
   logoUrl: text("logo_url"), // stored externally (R2 / any image host), we just keep the URL
   googlePlaceId: text("google_place_id"), // needed to build the "write a review" deep link
+  // Optional management WhatsApp (digits with country code). Used for negative-review deep links.
+  whatsappNumber: text("whatsapp_number"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

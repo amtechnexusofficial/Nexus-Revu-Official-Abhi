@@ -33,7 +33,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const existing = await loadOwned(id, adminId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { name, address, category, description, reviewThemes, logoUrl, googlePlaceId } = await req.json();
+  const { name, address, category, description, reviewThemes, logoUrl, googlePlaceId, whatsappNumber } =
+    await req.json();
 
   const validationError = validateBusinessDetails({
     name,
@@ -42,6 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     description,
     reviewThemes,
     googlePlaceId,
+    whatsappNumber,
   });
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
@@ -54,6 +56,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     description,
     reviewThemes,
     googlePlaceId,
+    whatsappNumber,
   });
 
   let normalizedLogo: string | null | undefined = undefined;
@@ -75,6 +78,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       reviewThemes: details.reviewThemes,
       ...(normalizedLogo !== undefined && { logoUrl: normalizedLogo }),
       googlePlaceId: details.googlePlaceId,
+      whatsappNumber: details.whatsappNumber,
     })
     .where(eq(businesses.id, id))
     .returning();

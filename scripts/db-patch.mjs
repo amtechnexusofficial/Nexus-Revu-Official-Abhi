@@ -55,6 +55,9 @@ async function main() {
     console.log("manage_token unique index/constraint already exists — skipped.");
   }
 
+  console.log("Adding whatsapp_number column…");
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS whatsapp_number text`;
+
   console.log("Done.");
 }
 
