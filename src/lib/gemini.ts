@@ -303,11 +303,17 @@ Background (accuracy only, do NOT recite the full list): ${description}`;
 }
 
 function formatVariationBlock(variation: VariationBundle, noAnswers: boolean): string {
-  const lines = [
-    `- Target length: about ${variation.targetWords} words (not longer)`,
-    `- Structure: ${variation.structureSeed}`,
-    `- Voice: ${variation.voiceSeed}`,
-  ];
+  const lines = variation.singleSentence
+    ? [
+        "- Format: one casual sentence only, no wrap-up or closing line",
+        `- Target length: about ${variation.targetWords} words max`,
+        `- Voice: ${variation.voiceSeed}`,
+      ]
+    : [
+        `- Target length: about ${variation.targetWords} words (not longer)`,
+        `- Structure: ${variation.structureSeed}`,
+        `- Voice: ${variation.voiceSeed}`,
+      ];
   if (!noAnswers) {
     lines.push(
       `- Lead with this answer as your opening focus: Q: ${variation.leadQa.question} / A: ${variation.leadQa.answer}`
@@ -338,6 +344,43 @@ function formatRepetitionGuards(recentDrafts: string[]): string {
       : "";
 
   return `${openingBan}${patternBan}`;
+}
+
+function buildLiteNoAnswersPrompt(
+  business: BusinessContext,
+  variation: VariationBundle
+): string {
+  const lengthHint = variation.singleSentence
+    ? "One casual sentence only."
+    : `About ${variation.targetWords} words.`;
+  return `Write a short Google review for ${business.name}. Sound like a real person, not marketing copy.
+${business.category ? `Business type: ${business.category}` : ""}
+${variation.highlightTheme ? `Mention: ${variation.highlightTheme}` : ""}
+
+${lengthHint} First person, contractions ok, understated tone.
+
+Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
+}
+
+function buildLiteReviewPrompt(
+  business: BusinessContext,
+  qas: QA[],
+  variation: VariationBundle
+): string {
+  const lengthHint = variation.singleSentence
+    ? "One casual sentence only — no wrap-up."
+    : `About ${variation.targetWords} words.`;
+  return `Write a short Google review from these customer answers. Sound like a quick phone note, not an essay.
+
+Business: ${business.name}
+${business.category ? `Type: ${business.category}` : ""}
+
+Answers:
+${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
+
+${lengthHint} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
+
+Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
 }
 
 function buildNoAnswersPrompt(
@@ -388,6 +431,9 @@ ${formatWriteRules([
   "Match tone honestly to star ratings in the answers",
   "Always stay true to the business category and description above — do not mention meals, dinner, or restaurant vibes unless that fits this business",
   "No emojis or hashtags unless the customer's vibe clearly suggests it",
+  ...(variation.singleSentence
+    ? ["Write exactly one casual sentence — no wrap-up, no closing summary"]
+    : []),
 ])}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
@@ -418,14 +464,40 @@ async function generateOnce(
   recentDrafts: string[]
 ): Promise<GeminiDraftResult> {
   const hasAnswers = qas.some((qa) => qa.answer.trim());
-  const prompt = hasAnswers
+  const fullPrompt = hasAnswers
     ? buildReviewPrompt(business, qas, variation, recentDrafts)
     : buildNoAnswersPrompt(business, variation, recentDrafts);
-  const text = await generateGeminiText(prompt, {
-    json: true,
-    temperature: 1,
-  });
-  return parseDraftJson(text);
+  const litePrompt = hasAnswers
+    ? buildLiteReviewPrompt(business, qas, variation)
+    : buildLiteNoAnswersPrompt(business, variation);
+
+  const primaryModel = getModel();
+  const attempts: { model: string; prompt: string }[] = [
+    { model: primaryModel, prompt: fullPrompt },
+  ];
+  if (primaryModel !== FALLBACK_MODEL) {
+    attempts.push({ model: FALLBACK_MODEL, prompt: litePrompt });
+  }
+
+  let lastError: unknown;
+  for (let i = 0; i < attempts.length; i++) {
+    const { model, prompt } = attempts[i];
+    try {
+      const text = await generateGeminiTextForModel(prompt, model, {
+        json: true,
+        temperature: 1,
+      });
+      return parseDraftJson(text);
+    } catch (err) {
+      lastError = err;
+      const next = attempts[i + 1];
+      if (next) {
+        console.warn(`Gemini model ${model} failed, trying ${next.model}:`, err);
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 /**

@@ -2,6 +2,8 @@ export type QA = { question: string; answer: string };
 
 export const TARGET_LENGTHS = [22, 28, 35, 42, 52, 65, 85] as const;
 
+export const SINGLE_SENTENCE_TARGET_LENGTHS = [12, 15, 18, 22] as const;
+
 export const STRUCTURE_SEEDS = [
   "Open with a specific detail, then overall feel",
   "Start mid-thought: 'Went for…', 'Tried the…'",
@@ -10,6 +12,7 @@ export const STRUCTURE_SEEDS = [
   "Start with who you were with or why you came, then the food or service",
   "Two short beats: what stood out, then whether you'd come back",
   "Sound like you're texting a friend the highlights",
+  "One casual sentence only — no wrap-up, no second thought",
 ] as const;
 
 export const VOICE_SEEDS = [
@@ -39,7 +42,31 @@ export type VariationBundle = {
   leadQa: QA;
   contentFocusSeed?: string;
   highlightTheme?: string;
+  singleSentence: boolean;
 };
+
+const SINGLE_SENTENCE_STRUCTURE =
+  "One casual sentence only — no wrap-up, no second thought";
+
+/** ~1 in 4 drafts are a single casual sentence. */
+const SINGLE_SENTENCE_CHANCE = 0.25;
+
+function pickSingleSentence(): boolean {
+  return Math.random() < SINGLE_SENTENCE_CHANCE;
+}
+
+function pickTargetWords(singleSentence: boolean): number {
+  if (singleSentence) {
+    return pickRandom(SINGLE_SENTENCE_TARGET_LENGTHS);
+  }
+  return pickRandom(TARGET_LENGTHS);
+}
+
+function pickStructureSeed(singleSentence: boolean): string {
+  if (singleSentence) return SINGLE_SENTENCE_STRUCTURE;
+  const multi = STRUCTURE_SEEDS.filter((s) => s !== SINGLE_SENTENCE_STRUCTURE);
+  return pickRandom(multi);
+}
 
 function pickRandom<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)];
@@ -51,12 +78,14 @@ export function pickVariation(qas: QA[]): VariationBundle {
     nonEmpty.length > 0
       ? pickRandom(nonEmpty)
       : { question: "overall experience", answer: "positive visit" };
+  const singleSentence = pickSingleSentence();
 
   return {
-    targetWords: pickRandom(TARGET_LENGTHS),
-    structureSeed: pickRandom(STRUCTURE_SEEDS),
+    targetWords: pickTargetWords(singleSentence),
+    structureSeed: pickStructureSeed(singleSentence),
     voiceSeed: pickRandom(VOICE_SEEDS),
     leadQa,
+    singleSentence,
   };
 }
 
@@ -81,13 +110,15 @@ function qaKey(qa: QA): string {
 }
 
 export function pickNoAnswerVariation(reviewThemes: string[]): VariationBundle {
+  const singleSentence = pickSingleSentence();
   return {
-    targetWords: pickRandom(TARGET_LENGTHS),
-    structureSeed: pickRandom(STRUCTURE_SEEDS),
+    targetWords: pickTargetWords(singleSentence),
+    structureSeed: pickStructureSeed(singleSentence),
     voiceSeed: pickRandom(VOICE_SEEDS),
     leadQa: { question: "overall experience", answer: "positive visit" },
-    contentFocusSeed: pickRandom(CONTENT_FOCUS_SEEDS),
+    contentFocusSeed: singleSentence ? undefined : pickRandom(CONTENT_FOCUS_SEEDS),
     highlightTheme: pickRandomTheme(reviewThemes),
+    singleSentence,
   };
 }
 
