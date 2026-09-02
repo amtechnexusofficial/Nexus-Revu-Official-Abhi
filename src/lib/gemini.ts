@@ -19,7 +19,8 @@ export type GeminiDraftResult = {
 };
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
-const GEMINI_TIMEOUT_MS = 22000;
+const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_TIMEOUT_MS = 10000;
 /** Enough for anti-repetition without bloating the prompt. */
 const MAX_RECENT_IN_PROMPT = 5;
 const PATTERN_TRUNCATE = 200;
@@ -27,7 +28,7 @@ const PATTERN_TRUNCATE = 200;
 function outputTokenLimit(model: string, requested?: number): number {
   if (requested) return requested;
   // Thinking models spend part of the budget on internal reasoning tokens.
-  return isGemini3Model(model) ? 2048 : 512;
+  return isGemini36Model(model) ? 2048 : 512;
 }
 
 function fetchWithTimeout(
@@ -52,8 +53,26 @@ function getModel(): string {
   return process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
 }
 
-function isGemini3Model(model: string): boolean {
-  return /gemini-3/i.test(model);
+function isGemini36Model(model: string): boolean {
+  return /gemini-3\.6/i.test(model);
+}
+
+function buildGenerationConfig(
+  model: string,
+  options?: GenerateOptions
+): Record<string, unknown> {
+  const generationConfig: Record<string, unknown> = {
+    temperature: options?.temperature ?? 1,
+    maxOutputTokens: outputTokenLimit(model, options?.maxOutputTokens),
+  };
+  if (options?.json) {
+    generationConfig.responseMimeType = "application/json";
+  }
+  // Only 3.6 Flash uses thinkingLevel. Lite models reject thinkingBudget: 0.
+  if (isGemini36Model(model)) {
+    generationConfig.thinkingConfig = { thinkingLevel: "low" };
+  }
+  return generationConfig;
 }
 
 type GenerateOptions = {
@@ -63,11 +82,9 @@ type GenerateOptions = {
   temperature?: number;
 };
 
-/**
- * Low-level Gemini generateContent call with kiosk-review settings.
- */
-export async function generateGeminiText(
+async function generateGeminiTextForModel(
   prompt: string,
+  model: string,
   options?: GenerateOptions
 ): Promise<string> {
   const apiKey = getApiKey();
@@ -75,23 +92,11 @@ export async function generateGeminiText(
     throw new Error("GEMINI_API_KEY environment variable is not set");
   }
 
-  const model = options?.model ?? getModel();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const generationConfig: Record<string, unknown> = {
-    temperature: options?.temperature ?? 1,
-    maxOutputTokens: outputTokenLimit(model, options?.maxOutputTokens),
-  };
-  if (options?.json) {
-    generationConfig.responseMimeType = "application/json";
-  }
-  if (isGemini3Model(model)) {
-    generationConfig.thinkingConfig = { thinkingLevel: "low" };
-  } else {
-    generationConfig.thinkingConfig = { thinkingBudget: 0 };
-  }
+  const generationConfig = buildGenerationConfig(model, options);
 
   const res = await fetchWithTimeout(url, {
     method: "POST",
@@ -105,7 +110,7 @@ export async function generateGeminiText(
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
     throw new Error(
-      `Gemini API error: ${res.status}${errBody ? ` — ${errBody.slice(0, 200)}` : ""}`
+      `Gemini API error (${model}): ${res.status}${errBody ? ` — ${errBody.slice(0, 200)}` : ""}`
     );
   }
 
@@ -115,10 +120,39 @@ export async function generateGeminiText(
   if (!text) {
     const finishReason = (data.candidates?.[0] as { finishReason?: string } | undefined)?.finishReason;
     throw new Error(
-      `Gemini returned an empty response${finishReason ? ` (finishReason: ${finishReason})` : ""}`
+      `Gemini returned an empty response (${model})${finishReason ? ` (finishReason: ${finishReason})` : ""}`
     );
   }
   return text;
+}
+
+/**
+ * Low-level Gemini generateContent call with kiosk-review settings.
+ * Tries the primary model first, then falls back to gemini-3.5-flash-lite on error.
+ */
+export async function generateGeminiText(
+  prompt: string,
+  options?: GenerateOptions
+): Promise<string> {
+  const primaryModel = options?.model ?? getModel();
+  const models =
+    primaryModel === FALLBACK_MODEL ? [primaryModel] : [primaryModel, FALLBACK_MODEL];
+
+  let lastError: unknown;
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    try {
+      return await generateGeminiTextForModel(prompt, model, options);
+    } catch (err) {
+      lastError = err;
+      const nextModel = models[i + 1];
+      if (nextModel) {
+        console.warn(`Gemini model ${model} failed, trying ${nextModel}:`, err);
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 type GeminiPart = { text?: string; thought?: boolean };
