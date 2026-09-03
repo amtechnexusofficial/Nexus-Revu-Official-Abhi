@@ -51,6 +51,9 @@ export const questions = pgTable("questions", {
   options: jsonb("options").$type<string[]>(),
   position: integer("position").notNull().default(0),
   active: boolean("active").notNull().default(true),
+  // When true, this question is always included in the customer review flow.
+  // At most one active question per business should have this set.
+  alwaysAsk: boolean("always_ask").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

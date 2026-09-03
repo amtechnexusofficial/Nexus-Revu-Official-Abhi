@@ -32,8 +32,16 @@ export default function ManageQuestionsPage({
         if (!r.ok) throw new Error(data.error ?? "Not found");
         setBusinessName(data.business.name);
         setLogoUrl(data.business.logoUrl);
-        setQuestions(data.questions ?? []);
-        if ((data.questions ?? []).length === 0) {
+        const loaded = (data.questions ?? []).map(
+          (q: EditableQuestion) => ({
+            ...EMPTY_QUESTION,
+            ...q,
+            alwaysAsk: Boolean(q.alwaysAsk),
+            active: q.active !== false,
+          })
+        );
+        setQuestions(loaded);
+        if (loaded.length === 0) {
           setQuestions([{ ...EMPTY_QUESTION }]);
           setExpandedIndex(0);
         }
@@ -46,7 +54,14 @@ export default function ManageQuestionsPage({
   }, [token]);
 
   function updateQuestion(index: number, updated: EditableQuestion) {
-    setQuestions((qs) => qs.map((q, i) => (i === index ? updated : q)));
+    setQuestions((qs) =>
+      qs.map((q, i) => {
+        if (i === index) return updated;
+        // Only one question can be always asked.
+        if (updated.alwaysAsk && q.alwaysAsk) return { ...q, alwaysAsk: false };
+        return q;
+      })
+    );
   }
   function removeQuestion(index: number) {
     setQuestions((qs) => qs.filter((_, i) => i !== index));
@@ -82,7 +97,16 @@ export default function ManageQuestionsPage({
       setSaveError(data.error ?? "Something went wrong");
       return;
     }
-    setQuestions(data.questions.length ? data.questions : [{ ...EMPTY_QUESTION }]);
+    setQuestions(
+      data.questions.length
+        ? data.questions.map((q: EditableQuestion) => ({
+            ...EMPTY_QUESTION,
+            ...q,
+            alwaysAsk: Boolean(q.alwaysAsk),
+            active: q.active !== false,
+          }))
+        : [{ ...EMPTY_QUESTION }]
+    );
     if (data.questions.length === 0) setExpandedIndex(0);
     setMessage(cleaned.length === 0 ? "Cleared. Add a question when you’re ready." : "Saved.");
   }

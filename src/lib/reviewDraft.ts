@@ -85,9 +85,26 @@ export function pickQuestionCount(poolSize: number): number {
   return 3;
 }
 
-/** Picks random questions out of the business's active question pool. */
-export function pickRandomQuestions<T>(pool: T[], count?: number): T[] {
+type AlwaysAskable = { alwaysAsk?: boolean | null };
+
+/**
+ * Picks questions from the active pool. Any alwaysAsk question is included first,
+ * then the rest are filled randomly up to the target count.
+ */
+export function pickRandomQuestions<T extends AlwaysAskable>(
+  pool: T[],
+  count?: number
+): T[] {
   const n = count ?? pickQuestionCount(pool.length);
-  const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, Math.min(n, shuffled.length));
+  if (pool.length === 0 || n <= 0) return [];
+
+  const mandatory = pool.filter((q) => q.alwaysAsk);
+  const optional = pool.filter((q) => !q.alwaysAsk);
+  const shuffledOptional = [...optional].sort(() => Math.random() - 0.5);
+
+  const remaining = Math.max(0, n - mandatory.length);
+  const picked = [...mandatory, ...shuffledOptional.slice(0, remaining)];
+
+  // Light shuffle so the mandatory question isn't always first in the UI.
+  return picked.sort(() => Math.random() - 0.5);
 }
