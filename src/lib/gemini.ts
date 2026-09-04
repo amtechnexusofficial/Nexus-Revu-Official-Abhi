@@ -268,6 +268,15 @@ WRITE LIKE A REAL PERSON, NOT MARKETING:
 - Only use facts from the answers and business context — do not invent menu items, staff names, or details
 - No emojis or hashtags`;
 
+const CONSTRUCTIVE_TONE_RULES = `
+WHEN FEEDBACK IS MIXED OR NEGATIVE (low stars, complaints, disappointment):
+- Stay truthful to the answers — do NOT flip a bad experience into praise
+- Soften the tone: calm, polite, and constructive, not angry or dramatic
+- Prefer plain specifics ("wait was long", "food was cold") over insults ("terrible", "worst", "awful", "never again")
+- No profanity, all-caps ranting, or attacks on staff by name
+- Keep it short — state what went wrong without stacking complaints
+- Sentiment label must still match reality (negative stays negative when the visit went poorly)`;
+
 function formatBannedLanguageRules(): string {
   return BANNED_LANGUAGE_RULES;
 }
@@ -379,6 +388,7 @@ Answers:
 ${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
 
 ${lengthHint} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
+If feedback is negative or mixed: stay truthful but calm and constructive — plain specifics, no insults or ranting. Do not rewrite a bad visit as praise.
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
 }
@@ -427,6 +437,7 @@ ${formatVariationBlock(variation, false)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${CONSTRUCTIVE_TONE_RULES}
 ${formatWriteRules([
   "Match tone honestly to star ratings in the answers",
   "Always stay true to the business category and description above — do not mention meals, dinner, or restaurant vibes unless that fits this business",
