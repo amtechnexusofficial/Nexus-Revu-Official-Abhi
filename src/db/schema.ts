@@ -69,5 +69,9 @@ export const reviewSessions = pgTable("review_sessions", {
   answers: jsonb("answers").notNull().$type<Record<string, string>>(),
   draftText: text("draft_text"),
   sentiment: text("sentiment"), // "positive" | "neutral" | "negative"
+  // Set when the customer clicks Post / Open Google review (not confirmed Google submit).
+  postedAt: timestamp("posted_at"),
+  // Set when the customer clicks the private WhatsApp path.
+  whatsappClickedAt: timestamp("whatsapp_clicked_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

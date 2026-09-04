@@ -61,6 +61,10 @@ async function main() {
   console.log("Adding always_ask column on questions…");
   await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS always_ask boolean NOT NULL DEFAULT false`;
 
+  console.log("Adding review session click-tracking columns…");
+  await sql`ALTER TABLE review_sessions ADD COLUMN IF NOT EXISTS posted_at timestamp`;
+  await sql`ALTER TABLE review_sessions ADD COLUMN IF NOT EXISTS whatsapp_clicked_at timestamp`;
+
   console.log("Done.");
 }
 

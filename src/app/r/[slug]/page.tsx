@@ -21,6 +21,7 @@ export default function CustomerReviewPage({
   const [sentiment, setSentiment] = useState<"positive" | "neutral" | "negative" | null>(null);
   const [googleUrl, setGoogleUrl] = useState<string | null>(null);
   const [whatsappUrl, setWhatsappUrl] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -77,6 +78,7 @@ export default function CustomerReviewPage({
       setSentiment(data.sentiment ?? null);
       setGoogleUrl(data.googleUrl);
       setWhatsappUrl(data.whatsappUrl ?? null);
+      setSessionId(data.sessionId ?? null);
       setStep("done");
     } catch (err) {
       const aborted = err instanceof Error && err.name === "AbortError";
@@ -91,6 +93,18 @@ export default function CustomerReviewPage({
     }
   }
 
+  function trackAction(action: "post" | "whatsapp") {
+    if (!sessionId) return;
+    void fetch(`/api/review/session/${sessionId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+      keepalive: true,
+    }).catch(() => {
+      // Tracking is best-effort — don't block the customer flow
+    });
+  }
+
   async function handlePost() {
     try {
       await navigator.clipboard.writeText(draft);
@@ -98,6 +112,7 @@ export default function CustomerReviewPage({
     } catch {
       // clipboard can fail on non-https/local — the text is still shown for manual copy
     }
+    trackAction("post");
     if (googleUrl) window.open(googleUrl, "_blank");
   }
 
@@ -107,7 +122,12 @@ export default function CustomerReviewPage({
     } catch {
       // clipboard can fail — customer can still copy from the draft box
     }
+    trackAction("post");
     if (googleUrl) window.open(googleUrl, "_blank");
+  }
+
+  function handleWhatsAppClick() {
+    trackAction("whatsapp");
   }
 
   const showWhatsAppPath = sentiment === "negative" && whatsappUrl;
@@ -169,6 +189,7 @@ export default function CustomerReviewPage({
               href={whatsappUrl}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={handleWhatsAppClick}
               className="inline-flex min-h-[48px] items-center justify-center gap-2.5 rounded-card bg-[#25D366] px-5 py-3.5 font-body text-sm font-semibold text-white shadow-sm transition hover:bg-[#1ebe57] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#25D366]"
             >
               <WhatsAppIcon />
@@ -215,7 +236,10 @@ export default function CustomerReviewPage({
             copied ? (
               <button
                 type="button"
-                onClick={() => window.open(googleUrl, "_blank")}
+                onClick={() => {
+                  trackAction("post");
+                  window.open(googleUrl, "_blank");
+                }}
                 className="text-center text-sm font-medium text-brand underline decoration-brand/50 underline-offset-2 hover:decoration-brand"
               >
                 Open Google again

@@ -100,13 +100,16 @@ export async function POST(req: NextRequest) {
         .filter((e): e is [string, string] => e !== null)
     );
 
-    await db.insert(reviewSessions).values({
-      businessId: business.id,
-      questionIds: answers.map((a) => a.questionId),
-      answers: sessionAnswers,
-      draftText,
-      sentiment,
-    });
+    const [session] = await db
+      .insert(reviewSessions)
+      .values({
+        businessId: business.id,
+        questionIds: answers.map((a) => a.questionId),
+        answers: sessionAnswers,
+        draftText,
+        sentiment,
+      })
+      .returning({ id: reviewSessions.id });
 
     const googleUrl = business.googlePlaceId
       ? googleWriteReviewUrl(business.googlePlaceId)
@@ -120,7 +123,13 @@ export async function POST(req: NextRequest) {
           )
         : null;
 
-    return NextResponse.json({ draftText, sentiment, googleUrl, whatsappUrl });
+    return NextResponse.json({
+      sessionId: session.id,
+      draftText,
+      sentiment,
+      googleUrl,
+      whatsappUrl,
+    });
   } catch (err) {
     console.error("Review draft route error:", err);
     return NextResponse.json(
