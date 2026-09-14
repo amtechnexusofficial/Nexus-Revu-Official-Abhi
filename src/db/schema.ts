@@ -35,6 +35,8 @@ export const businesses = pgTable("businesses", {
   googlePlaceId: text("google_place_id"), // needed to build the "write a review" deep link
   // Optional management WhatsApp (digits with country code). Used for negative-review deep links.
   whatsappNumber: text("whatsapp_number"),
+  // When set, backlog refill should not retry Gemini until this time (API failure cooldown).
+  backlogRefillAfter: timestamp("backlog_refill_after"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -73,5 +75,17 @@ export const reviewSessions = pgTable("review_sessions", {
   postedAt: timestamp("posted_at"),
   // Set when the customer clicks the private WhatsApp path.
   whatsappClickedAt: timestamp("whatsapp_clicked_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Pre-generated review drafts per business (positive / neutral / negative).
+// Used when live Gemini drafting fails. Target: 5 ready drafts total.
+export const reviewBacklog = pgTable("review_backlog", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id")
+    .notNull()
+    .references(() => businesses.id, { onDelete: "cascade" }),
+  draftText: text("draft_text").notNull(),
+  sentiment: text("sentiment").notNull(), // "positive" | "neutral" | "negative"
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

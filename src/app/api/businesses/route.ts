@@ -4,6 +4,7 @@ import { businesses } from "@/db/schema";
 import { getSessionAdminId } from "@/lib/auth";
 import { normalizeLogoUrl } from "@/lib/logoValidation";
 import { normalizeBusinessDetails, validateBusinessDetails } from "@/lib/businessValidation";
+import { scheduleBacklogRefill } from "@/lib/reviewBacklog";
 import { nanoid } from "nanoid";
 import { eq, desc } from "drizzle-orm";
 
@@ -83,6 +84,8 @@ export async function POST(req: NextRequest) {
       manageToken,
     })
     .returning();
+
+  scheduleBacklogRefill(business.id);
 
   return NextResponse.json({ business });
 }

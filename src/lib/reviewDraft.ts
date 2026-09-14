@@ -63,7 +63,7 @@ function formatQaSentence(qa: QA): string {
   return `Regarding ${q.toLowerCase()}: ${answer}.`;
 }
 
-function estimateSentiment(qas: QA[]): DraftResult["sentiment"] {
+export function estimateSentiment(qas: QA[]): DraftResult["sentiment"] {
   const ratings = qas
     .map((qa) => {
       const m = qa.answer.match(/^(\d)\s+out of 5 stars$/i);
@@ -71,11 +71,23 @@ function estimateSentiment(qas: QA[]): DraftResult["sentiment"] {
     })
     .filter((n): n is number => n !== null);
 
-  if (ratings.length === 0) return "neutral";
+  if (ratings.length > 0) {
+    const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+    if (avg >= 4) return "positive";
+    if (avg <= 2) return "negative";
+    return "neutral";
+  }
 
-  const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
-  if (avg >= 4) return "positive";
-  if (avg <= 2) return "negative";
+  const text = qas.map((qa) => qa.answer.toLowerCase()).join(" ");
+  const negativeHints =
+    /\b(bad|poor|slow|cold|rude|dirty|worst|awful|terrible|disappointed|never again|not good|overpriced)\b/;
+  const positiveHints =
+    /\b(great|good|amazing|loved|excellent|tasty|friendly|perfect|recommend|delicious)\b/;
+
+  const neg = negativeHints.test(text);
+  const pos = positiveHints.test(text);
+  if (neg && !pos) return "negative";
+  if (pos && !neg) return "positive";
   return "neutral";
 }
 

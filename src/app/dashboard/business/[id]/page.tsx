@@ -57,6 +57,53 @@ export default function BusinessDetailPage({
   const [manageUrl, setManageUrl] = useState<string | null>(null);
   const [downloadingReviewQr, setDownloadingReviewQr] = useState(false);
   const [downloadingQuestionsQr, setDownloadingQuestionsQr] = useState(false);
+  const [backlog, setBacklog] = useState<{
+    total: number;
+    target: number;
+    bySentiment: { positive: number; neutral: number; negative: number };
+    cooldownActive: boolean;
+    refillAfter: string | null;
+  } | null>(null);
+  const [loadingBacklog, setLoadingBacklog] = useState(false);
+  const [backlogMessage, setBacklogMessage] = useState<string | null>(null);
+  const [backlogError, setBacklogError] = useState<string | null>(null);
+
+  function applyBacklogPayload(data: {
+    total: number;
+    target: number;
+    bySentiment: { positive: number; neutral: number; negative: number };
+    cooldownActive: boolean;
+    refillAfter?: string | Date | null;
+  }) {
+    setBacklog({
+      total: data.total,
+      target: data.target,
+      bySentiment: data.bySentiment,
+      cooldownActive: data.cooldownActive,
+      refillAfter: data.refillAfter ? String(data.refillAfter) : null,
+    });
+  }
+
+  async function handleLoadBacklog() {
+    if (isNew) return;
+    setBacklogError(null);
+    setBacklogMessage(null);
+    setLoadingBacklog(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}/backlog`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (data.backlog) applyBacklogPayload(data.backlog);
+      if (!res.ok) {
+        setBacklogError(data.error ?? "Could not load backlog reviews");
+        return;
+      }
+      setBacklogMessage(data.message ?? "Backlog loaded.");
+    } catch {
+      setBacklogError("Could not load backlog reviews");
+    } finally {
+      setLoadingBacklog(false);
+    }
+  }
 
   useEffect(() => {
     if (isNew) return;
@@ -84,6 +131,14 @@ export default function BusinessDetailPage({
         setReviewUrl(data.reviewUrl);
         setManageQrDataUrl(data.manageQrDataUrl);
         setManageUrl(data.manageUrl);
+      });
+    fetch(`/api/businesses/${id}/backlog`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.backlog) applyBacklogPayload(data.backlog);
+      })
+      .catch(() => {
+        // Backlog endpoint may fail before DB patch — ignore on load
       });
   }, [id, isNew]);
 
@@ -363,6 +418,63 @@ export default function BusinessDetailPage({
               WhatsApp button so they can reach management directly before posting on Google.
             </p>
           </div>
+
+          {!isNew && (
+            <div className="rounded-card border border-ink/10 bg-ink/[0.02] p-4">
+              <h3 className="text-sm font-medium text-ink">Fallback backlog reviews</h3>
+              <p className="mt-1 text-xs leading-relaxed text-ink/55">
+                Ready AI drafts used if Gemini fails. Target is {backlog?.target ?? 5} per
+                business (2 positive, 1 neutral, 2 negative). Auto-refills after use; you can
+                also load them here.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-xl bg-white px-3 py-2 border border-ink/8">
+                  <p className="text-[11px] uppercase tracking-wide text-ink/45">Total</p>
+                  <p className="mt-0.5 font-display text-xl text-ink">
+                    {backlog ? `${backlog.total}/${backlog.target}` : "—"}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-white px-3 py-2 border border-ink/8">
+                  <p className="text-[11px] uppercase tracking-wide text-ink/45">Positive</p>
+                  <p className="mt-0.5 font-display text-xl text-ink">
+                    {backlog?.bySentiment.positive ?? "—"}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-white px-3 py-2 border border-ink/8">
+                  <p className="text-[11px] uppercase tracking-wide text-ink/45">Neutral</p>
+                  <p className="mt-0.5 font-display text-xl text-ink">
+                    {backlog?.bySentiment.neutral ?? "—"}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-white px-3 py-2 border border-ink/8">
+                  <p className="text-[11px] uppercase tracking-wide text-ink/45">Negative</p>
+                  <p className="mt-0.5 font-display text-xl text-ink">
+                    {backlog?.bySentiment.negative ?? "—"}
+                  </p>
+                </div>
+              </div>
+              {backlog?.cooldownActive && (
+                <p className="mt-2 text-xs text-ink/50">
+                  Auto-refill is cooling down after an API failure
+                  {backlog.refillAfter
+                    ? ` until ${new Date(backlog.refillAfter).toLocaleString()}`
+                    : ""}
+                  . This button still forces a load.
+                </p>
+              )}
+              {backlogError && <p className="mt-2 text-sm text-red-600">{backlogError}</p>}
+              {backlogMessage && <p className="mt-2 text-sm text-brand">{backlogMessage}</p>}
+              <button
+                type="button"
+                className="btn-secondary mt-3 w-full sm:w-auto"
+                disabled={loadingBacklog}
+                onClick={handleLoadBacklog}
+              >
+                {loadingBacklog ? "Loading backlog…" : "Load backlog reviews"}
+              </button>
+            </div>
+          )}
+
           {detailsError && <p className="text-sm text-red-600">{detailsError}</p>}
           {detailsMessage && <p className="text-sm text-brand">{detailsMessage}</p>}
           <button className="btn-primary w-full sm:w-auto sm:self-start" disabled={savingDetails || uploadingLogo}>
@@ -375,7 +487,9 @@ export default function BusinessDetailPage({
         <div className="card flex flex-col items-center gap-4 text-center">
           <h2 className="font-display text-lg text-ink">Questions QR</h2>
           <p className="max-w-md text-sm text-ink/60">
-            Staff scan this to add or edit review questions on their phone.
+            Staff scan this to add or edit review questions, logo, description, review themes, and
+            management WhatsApp
+            on their phone.
             {questionCount === 0
               ? " No questions yet — scanning lets them add the first one."
               : ` Currently ${questionCount} question${questionCount === 1 ? "" : "s"} saved.`}

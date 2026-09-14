@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, reviewSessions } from "@/db/schema";
 import { draftReviewWithGemini, isGeminiConfigured } from "@/lib/gemini";
-import { draftReview } from "@/lib/reviewDraft";
+import { draftReview, estimateSentiment } from "@/lib/reviewDraft";
+import {
+  scheduleBacklogRefill,
+  takeBacklogDraft,
+} from "@/lib/reviewBacklog";
 import { googleWriteReviewUrl } from "@/lib/qr";
 import {
   buildNegativeReviewWhatsAppMessage,
@@ -18,6 +22,7 @@ type Body = {
 
 async function buildDraft(
   business: {
+    id: string;
     name: string;
     category: string | null;
     description: string | null;
@@ -25,10 +30,10 @@ async function buildDraft(
   },
   formatted: { question: string; answer: string }[],
   recentDrafts: string[]
-): Promise<{ draftText: string; sentiment: string }> {
+): Promise<{ draftText: string; sentiment: string; source: "gemini" | "backlog" | "template" }> {
   if (isGeminiConfigured()) {
     try {
-      return await draftReviewWithGemini(
+      const result = await draftReviewWithGemini(
         {
           name: business.name,
           category: business.category,
@@ -38,16 +43,26 @@ async function buildDraft(
         formatted,
         recentDrafts
       );
+      return { ...result, source: "gemini" };
     } catch (err) {
-      console.error("Gemini draft failed, using template fallback:", err);
+      console.error("Gemini draft failed, trying backlog:", err);
     }
   }
 
-  return draftReview(business.name, formatted, {
+  const preferred = estimateSentiment(formatted);
+  const backlog = await takeBacklogDraft(business.id, preferred);
+  if (backlog) {
+    scheduleBacklogRefill(business.id);
+    return { ...backlog, source: "backlog" };
+  }
+
+  const template = draftReview(business.name, formatted, {
     category: business.category,
     description: business.description,
     reviewThemes: business.reviewThemes,
   });
+  scheduleBacklogRefill(business.id);
+  return { ...template, source: "template" };
 }
 
 export async function POST(req: NextRequest) {
@@ -60,6 +75,9 @@ export async function POST(req: NextRequest) {
 
     const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
     if (!business) return NextResponse.json({ error: "Business not found" }, { status: 404 });
+
+    // Top up backlog when cooldown allows (no-op if full or still cooling down).
+    scheduleBacklogRefill(business.id);
 
     const formatted = answers
       .map((a) => ({
@@ -79,7 +97,7 @@ export async function POST(req: NextRequest) {
       .map((r) => r.draftText)
       .filter((t): t is string => Boolean(t?.trim()));
 
-    let { draftText, sentiment } = await buildDraft(business, formatted, recentDrafts);
+    let { draftText, sentiment, source } = await buildDraft(business, formatted, recentDrafts);
 
     if (!draftText?.trim()) {
       const fallback = draftReview(business.name, formatted, {
@@ -89,6 +107,7 @@ export async function POST(req: NextRequest) {
       });
       draftText = fallback.draftText;
       sentiment = fallback.sentiment;
+      source = "template";
     }
 
     const sessionAnswers = Object.fromEntries(
@@ -129,6 +148,7 @@ export async function POST(req: NextRequest) {
       sentiment,
       googleUrl,
       whatsappUrl,
+      draftSource: source,
     });
   } catch (err) {
     console.error("Review draft route error:", err);

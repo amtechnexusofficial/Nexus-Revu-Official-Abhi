@@ -65,6 +65,24 @@ async function main() {
   await sql`ALTER TABLE review_sessions ADD COLUMN IF NOT EXISTS posted_at timestamp`;
   await sql`ALTER TABLE review_sessions ADD COLUMN IF NOT EXISTS whatsapp_clicked_at timestamp`;
 
+  console.log("Adding backlog_refill_after on businesses…");
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS backlog_refill_after timestamp`;
+
+  console.log("Creating review_backlog table if missing…");
+  await sql`
+    CREATE TABLE IF NOT EXISTS review_backlog (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      business_id uuid NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+      draft_text text NOT NULL,
+      sentiment text NOT NULL,
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS review_backlog_business_sentiment_idx
+    ON review_backlog (business_id, sentiment)
+  `;
+
   console.log("Done.");
 }
 

@@ -537,3 +537,79 @@ export async function draftReviewWithGemini(
 
   return result;
 }
+
+/**
+ * Pre-generate a backlog draft for a target sentiment (no real customer answers).
+ */
+export async function draftBacklogReviewWithGemini(
+  business: BusinessContext,
+  sentiment: "positive" | "neutral" | "negative",
+  recentDrafts: string[] = []
+): Promise<GeminiDraftResult> {
+  const themes = (business.reviewThemes ?? []).filter((t) => t.trim());
+  const variation = pickNoAnswerVariation(themes);
+  const tone =
+    sentiment === "positive"
+      ? "Write a short positive review. Friendly, understated, would return."
+      : sentiment === "negative"
+        ? "Write a short constructive negative review. Calm and specific (e.g. wait was long), not insulting. Do not praise the visit."
+        : "Write a short mixed/neutral review. Okay but not great — something average about service, wait, or value.";
+
+  const fullPrompt = `You are drafting a Google review for this business to keep as a standby fallback.
+Target sentiment for THIS draft: ${sentiment}
+${tone}
+
+${formatBusinessContext(business, variation.highlightTheme)}
+
+VARIATION FOR THIS DRAFT:
+${formatVariationBlock(variation, true)}
+${formatRepetitionGuards(recentDrafts)}
+${SELECTIVE_CONTEXT_RULES}
+${formatBannedLanguageRules()}
+${CONSTRUCTIVE_TONE_RULES}
+${formatWriteRules([
+  `Return sentiment exactly as "${sentiment}"`,
+  "Stay true to the category and description — do not invent menu items or staff names",
+  "About 25-40 words unless single-sentence variation says otherwise",
+])}
+
+Respond ONLY with JSON:
+{"draftText": "...", "sentiment": "${sentiment}"}`;
+
+  const litePrompt = `Write a short Google review for ${business.name}. Target sentiment: ${sentiment}.
+${business.category ? `Type: ${business.category}` : ""}
+${variation.highlightTheme ? `Angle: ${variation.highlightTheme}` : ""}
+${tone}
+Sound like a real person. About 30 words.
+
+Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
+
+  const primaryModel = getModel();
+  const attempts: { model: string; prompt: string }[] = [
+    { model: primaryModel, prompt: fullPrompt },
+  ];
+  if (primaryModel !== FALLBACK_MODEL) {
+    attempts.push({ model: FALLBACK_MODEL, prompt: litePrompt });
+  }
+
+  let lastError: unknown;
+  for (let i = 0; i < attempts.length; i++) {
+    const { model, prompt } = attempts[i];
+    try {
+      const text = await generateGeminiTextForModel(prompt, model, {
+        json: true,
+        temperature: 1,
+      });
+      const parsed = parseDraftJson(text);
+      return { draftText: parsed.draftText, sentiment };
+    } catch (err) {
+      lastError = err;
+      const next = attempts[i + 1];
+      if (next) {
+        console.warn(`Gemini backlog model ${model} failed, trying ${next.model}:`, err);
+      }
+    }
+  }
+
+  throw lastError;
+}

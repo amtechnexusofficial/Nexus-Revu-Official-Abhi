@@ -31,7 +31,13 @@ export async function GET(
     .orderBy(questions.position);
 
   return NextResponse.json({
-    business: { name: business.name, logoUrl: business.logoUrl },
+    business: {
+      name: business.name,
+      logoUrl: business.logoUrl,
+      description: business.description,
+      reviewThemes: business.reviewThemes,
+      whatsappNumber: business.whatsappNumber,
+    },
     questions: rows,
   });
 }
