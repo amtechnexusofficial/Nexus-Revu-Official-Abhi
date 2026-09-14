@@ -8,6 +8,9 @@ const CTA_BLUE = "#1A73E8";
 const BG = "#FFFFFF";
 const GOOGLE_REVIEWS_LOGO_PATH = "/google-reviews-logo.png";
 
+/** Pixel density for print-ready PNG downloads / previews (~3× layout size). */
+const EXPORT_SCALE = 3;
+
 export type QrFlyerOptions = {
   businessName: string;
   logoUrl?: string | null;
@@ -141,6 +144,35 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
+/** Draw QR modules without bilinear blur so edges stay crisp at print size. */
+function drawQrCrisp(
+  ctx: CanvasRenderingContext2D,
+  qr: HTMLImageElement,
+  x: number,
+  y: number,
+  size: number
+) {
+  const prev = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(qr, x, y, size, size);
+  ctx.imageSmoothingEnabled = prev;
+}
+
+function prepareExportCanvas(
+  layoutWidth: number,
+  layoutHeight: number
+): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(layoutWidth * EXPORT_SCALE);
+  canvas.height = Math.round(layoutHeight * EXPORT_SCALE);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not create image");
+  ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  return { canvas, ctx };
+}
+
 function normalizeFlyerOptions(options?: QrFlyerOptions | string | null): QrFlyerOptions {
   if (typeof options === "string" || options === null || options === undefined) {
     return { businessName: "Our business", logoUrl: typeof options === "string" ? options : null };
@@ -208,12 +240,12 @@ export async function renderQrFlyerCanvas(
         )
       : { width: 0, height: 0 };
 
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not create image");
-
-  ctx.font = `600 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
-  const nameLines = wrapText(ctx, businessName, INNER_W - 8);
+  // Measure name lines on a throwaway 1× context so wrap matches final layout.
+  const measureCanvas = document.createElement("canvas");
+  const measureCtx = measureCanvas.getContext("2d");
+  if (!measureCtx) throw new Error("Could not create image");
+  measureCtx.font = `600 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
+  const nameLines = wrapText(measureCtx, businessName, INNER_W - 8);
   const nameBlockH = nameLines.length * 32;
 
   let contentH = PAD;
@@ -222,13 +254,13 @@ export async function renderQrFlyerCanvas(
   if (googleReviewsLogo) contentH += googleReviewsDims.height + 24;
   contentH += QR_SIZE + QR_BORDER * 2 + 20 + CTA_TEXT_H + 16 + FOOTER_H + PAD;
 
-  canvas.width = CARD_W;
-  canvas.height = contentH + OUTER_BORDER * 2;
+  const layoutH = contentH + OUTER_BORDER * 2;
+  const { canvas, ctx } = prepareExportCanvas(CARD_W, layoutH);
 
   const innerX = OUTER_BORDER;
   const innerY = OUTER_BORDER;
   const innerW = CARD_W - OUTER_BORDER * 2;
-  const innerH = canvas.height - OUTER_BORDER * 2;
+  const innerH = layoutH - OUTER_BORDER * 2;
 
   ctx.fillStyle = BG;
   roundRectPath(ctx, innerX, innerY, innerW, innerH, BORDER_R);
@@ -282,7 +314,7 @@ export async function renderQrFlyerCanvas(
   ctx.fill();
   drawGoogleRoundedBorder(ctx, qrFrameX, qrFrameY, qrFrameW, qrFrameH, QR_FRAME_R, QR_BORDER);
 
-  ctx.drawImage(qr, qrFrameX + QR_BORDER, qrFrameY + QR_BORDER, QR_SIZE, QR_SIZE);
+  drawQrCrisp(ctx, qr, qrFrameX + QR_BORDER, qrFrameY + QR_BORDER, QR_SIZE);
   y += qrFrameH + 20;
 
   ctx.fillStyle = MUTED;
@@ -392,22 +424,18 @@ export async function renderQuestionsQrCanvas(
       ? fitLogoDimensions(logo.naturalWidth, logo.naturalHeight, logoMaxW, logoMaxH)
       : { width: 0, height: 0 };
 
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not create image");
-
   let contentH = PAD;
   if (logo) contentH += logoDims.height + 20;
   else contentH += PLACEHOLDER_SIZE + 20;
   contentH += 20 + 28 + QR_SIZE + QR_BORDER * 2 + PAD;
 
-  canvas.width = CARD_W;
-  canvas.height = contentH + OUTER_BORDER * 2;
+  const layoutH = contentH + OUTER_BORDER * 2;
+  const { canvas, ctx } = prepareExportCanvas(CARD_W, layoutH);
 
   const innerX = OUTER_BORDER;
   const innerY = OUTER_BORDER;
   const innerW = CARD_W - OUTER_BORDER * 2;
-  const innerH = canvas.height - OUTER_BORDER * 2;
+  const innerH = layoutH - OUTER_BORDER * 2;
   const centerX = CARD_W / 2;
 
   ctx.fillStyle = BG;
@@ -440,7 +468,7 @@ export async function renderQuestionsQrCanvas(
   roundRectPath(ctx, qrFrameX, qrFrameY, qrFrameW, qrFrameW, QR_FRAME_R);
   ctx.fill();
   drawGoogleRoundedBorder(ctx, qrFrameX, qrFrameY, qrFrameW, qrFrameW, QR_FRAME_R, QR_BORDER);
-  ctx.drawImage(qr, qrFrameX + QR_BORDER, qrFrameY + QR_BORDER, QR_SIZE, QR_SIZE);
+  drawQrCrisp(ctx, qr, qrFrameX + QR_BORDER, qrFrameY + QR_BORDER, QR_SIZE);
 
   return canvas;
 }

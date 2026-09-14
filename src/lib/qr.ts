@@ -3,8 +3,10 @@ import QRCode from "qrcode";
 /** Generates a QR code as a data URL pointing at the customer review page. */
 export async function generateQrDataUrl(url: string): Promise<string> {
   return QRCode.toDataURL(url, {
-    width: 512,
+    // High pixel density so flyer/download canvases stay sharp when scaled up.
+    width: 2048,
     margin: 2,
+    errorCorrectionLevel: "M",
     color: { dark: "#14171C", light: "#FAF9F6" },
   });
 }
