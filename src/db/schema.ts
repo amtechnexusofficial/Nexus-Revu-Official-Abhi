@@ -89,3 +89,14 @@ export const reviewBacklog = pgTable("review_backlog", {
   sentiment: text("sentiment").notNull(), // "positive" | "neutral" | "negative"
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Customer-flow / API failures surfaced on the admin Errors dashboard.
+export const appErrors = pgTable("app_errors", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").references(() => businesses.id, { onDelete: "set null" }),
+  slug: text("slug"),
+  source: text("source").notNull(), // e.g. review_questions_client | review_questions_api
+  message: text("message").notNull(),
+  detail: text("detail"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});

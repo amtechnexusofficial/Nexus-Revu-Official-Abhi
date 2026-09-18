@@ -6,6 +6,17 @@ import type { QuestionType } from "@/lib/questionTypes";
 type Question = { id: string; text: string; type: QuestionType; options: string[] | null };
 type BusinessInfo = { name: string; logoUrl: string | null; slug: string };
 
+function reportClientError(slug: string, source: string, message: string, detail?: string) {
+  void fetch("/api/review/errors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug, source, message, detail }),
+    keepalive: true,
+  }).catch(() => {
+    // Reporting must never block the customer
+  });
+}
+
 export default function CustomerReviewPage({
   params,
 }: {
@@ -24,12 +35,19 @@ export default function CustomerReviewPage({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const [loadKey, setLoadKey] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
 
     async function loadQuestions(attempt = 1): Promise<void> {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
       try {
-        const r = await fetch(`/api/review/questions?slug=${encodeURIComponent(slug)}`);
+        const r = await fetch(`/api/review/questions?slug=${encodeURIComponent(slug)}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         const raw = await r.text();
         let data: {
           error?: string;
@@ -39,33 +57,61 @@ export default function CustomerReviewPage({
         try {
           data = raw ? JSON.parse(raw) : {};
         } catch {
-          if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 400));
+          if (attempt < 4) {
+            await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+            if (cancelled) return;
             return loadQuestions(attempt + 1);
           }
           throw new Error("Could not load this review page. Please try again.");
         }
-        if (!r.ok) throw new Error(data.error || "Could not load this review page.");
+        if (!r.ok) {
+          // Transient DB/cold-start failures — retry a few times on mobile networks.
+          if (r.status >= 500 && attempt < 4) {
+            await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+            if (cancelled) return;
+            return loadQuestions(attempt + 1);
+          }
+          throw new Error(data.error || "Could not load this review page.");
+        }
+        if (!data.questions?.length) {
+          throw new Error(data.error || "This business hasn't set up any questions yet");
+        }
         if (cancelled) return;
         setBusiness(data.business ?? null);
-        setQuestions(data.questions ?? []);
+        setQuestions(data.questions);
+        setErrorMsg("");
         setStep("answering");
       } catch (e) {
         if (cancelled) return;
+        const aborted = e instanceof Error && e.name === "AbortError";
+        if (aborted && attempt < 4) {
+          await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+          if (cancelled) return;
+          return loadQuestions(attempt + 1);
+        }
         const message =
-          e instanceof Error && e.message && !/JSON|Unexpected|Unterminated/i.test(e.message)
+          e instanceof Error && e.message && !/JSON|Unexpected|Unterminated|Failed to fetch|NetworkError|abort/i.test(e.message)
             ? e.message
             : "Could not load this review page. Please try again.";
         setErrorMsg(message);
         setStep("error");
+        reportClientError(
+          slug,
+          "review_questions_client",
+          message,
+          e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
+    setStep("loading");
     void loadQuestions();
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, loadKey]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -103,19 +149,25 @@ export default function CustomerReviewPage({
       try {
         data = raw ? JSON.parse(raw) : {};
       } catch {
-        setErrorMsg("We couldn't write a review this time. Please try again.");
+        const message = "We couldn't write a review this time. Please try again.";
+        setErrorMsg(message);
         setStep("error");
+        reportClientError(slug, "review_draft_client", message, `Invalid JSON (${raw.length} bytes)`);
         return;
       }
 
       if (!res.ok) {
-        setErrorMsg(data.error ?? "Something went wrong");
+        const message = data.error ?? "Something went wrong";
+        setErrorMsg(message);
         setStep("error");
+        reportClientError(slug, "review_draft_client", message, `HTTP ${res.status}`);
         return;
       }
       if (!data.draftText?.trim()) {
-        setErrorMsg("We couldn't write a review this time. Please try again.");
+        const message = "We couldn't write a review this time. Please try again.";
+        setErrorMsg(message);
         setStep("error");
+        reportClientError(slug, "review_draft_client", message, "Empty draftText");
         return;
       }
       setDraft(data.draftText);
@@ -126,12 +178,17 @@ export default function CustomerReviewPage({
       setStep("done");
     } catch (err) {
       const aborted = err instanceof Error && err.name === "AbortError";
-      setErrorMsg(
-        aborted
-          ? "This is taking too long. Please try again."
-          : "Something went wrong. Please try again."
-      );
+      const message = aborted
+        ? "This is taking too long. Please try again."
+        : "Something went wrong. Please try again.";
+      setErrorMsg(message);
       setStep("error");
+      reportClientError(
+        slug,
+        "review_draft_client",
+        message,
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      );
     } finally {
       clearTimeout(timeoutId);
     }
@@ -177,7 +234,26 @@ export default function CustomerReviewPage({
   const showWhatsAppPath = sentiment === "negative" && whatsappUrl;
 
   if (step === "loading") return <Centered>Loading…</Centered>;
-  if (step === "error") return <Centered>{errorMsg}</Centered>;
+  if (step === "error") {
+    return (
+      <Centered>
+        <div className="flex max-w-sm flex-col items-center gap-4">
+          <p>{errorMsg || "Could not load this review page. Please try again."}</p>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => {
+              setErrorMsg("");
+              setStep("loading");
+              setLoadKey((k) => k + 1);
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      </Centered>
+    );
+  }
 
   return (
     <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col justify-center px-4 py-8 pt-[max(2rem,env(safe-area-inset-top))] pb-[max(2rem,env(safe-area-inset-bottom))] sm:px-6 sm:py-12">

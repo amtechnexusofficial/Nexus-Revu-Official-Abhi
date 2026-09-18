@@ -13,6 +13,7 @@ import {
   whatsappChatUrl,
 } from "@/lib/whatsapp";
 import { formatAnswerForDisplay, type QuestionType } from "@/lib/questionTypes";
+import { errorDetail, logAppError } from "@/lib/errorLog";
 import { desc, eq } from "drizzle-orm";
 
 type Body = {
@@ -66,8 +67,10 @@ async function buildDraft(
 }
 
 export async function POST(req: NextRequest) {
+  let slugForLog: string | null = null;
   try {
     const { slug, answers }: Body = await req.json();
+    slugForLog = slug ?? null;
 
     if (!slug || !Array.isArray(answers)) {
       return NextResponse.json({ error: "slug and answers are required" }, { status: 400 });
@@ -152,6 +155,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     console.error("Review draft route error:", err);
+    void logAppError({
+      source: "review_draft_api",
+      message: "Could not generate your review. Please try again.",
+      slug: slugForLog,
+      detail: errorDetail(err),
+    });
     return NextResponse.json(
       { error: "Could not generate your review. Please try again." },
       { status: 500 }

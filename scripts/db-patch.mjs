@@ -83,6 +83,23 @@ async function main() {
     ON review_backlog (business_id, sentiment)
   `;
 
+  console.log("Creating app_errors table if missing…");
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_errors (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      business_id uuid REFERENCES businesses(id) ON DELETE SET NULL,
+      slug text,
+      source text NOT NULL,
+      message text NOT NULL,
+      detail text,
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS app_errors_created_at_idx
+    ON app_errors (created_at DESC)
+  `;
+
   console.log("Done.");
 }
 
