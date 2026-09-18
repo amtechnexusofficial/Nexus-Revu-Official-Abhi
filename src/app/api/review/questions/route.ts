@@ -22,8 +22,16 @@ export async function GET(req: NextRequest) {
 
   const picked = pickRandomQuestions(pool, pickQuestionCount(pool.length));
 
+  // Never embed data-URL logos in JSON — large base64 payloads were getting
+  // truncated around 16KB on flaky mobile networks ("Unterminated string at 16384").
+  const logoUrl = business.logoUrl
+    ? business.logoUrl.startsWith("data:")
+      ? `/api/review/logo?slug=${encodeURIComponent(business.slug)}`
+      : business.logoUrl
+    : null;
+
   return NextResponse.json({
-    business: { name: business.name, logoUrl: business.logoUrl, slug: business.slug },
+    business: { name: business.name, logoUrl, slug: business.slug },
     questions: picked.map((q) => ({ id: q.id, text: q.text, type: q.type, options: q.options })),
   });
 }

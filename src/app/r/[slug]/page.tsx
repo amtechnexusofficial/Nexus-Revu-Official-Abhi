@@ -25,18 +25,46 @@ export default function CustomerReviewPage({
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/review/questions?slug=${encodeURIComponent(slug)}`)
-      .then(async (r) => {
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error);
-        setBusiness(data.business);
-        setQuestions(data.questions);
+    let cancelled = false;
+
+    async function loadQuestions(attempt = 1): Promise<void> {
+      try {
+        const r = await fetch(`/api/review/questions?slug=${encodeURIComponent(slug)}`);
+        const raw = await r.text();
+        let data: {
+          error?: string;
+          business?: BusinessInfo;
+          questions?: Question[];
+        };
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            return loadQuestions(attempt + 1);
+          }
+          throw new Error("Could not load this review page. Please try again.");
+        }
+        if (!r.ok) throw new Error(data.error || "Could not load this review page.");
+        if (cancelled) return;
+        setBusiness(data.business ?? null);
+        setQuestions(data.questions ?? []);
         setStep("answering");
-      })
-      .catch((e) => {
-        setErrorMsg(e.message ?? "Something went wrong");
+      } catch (e) {
+        if (cancelled) return;
+        const message =
+          e instanceof Error && e.message && !/JSON|Unexpected|Unterminated/i.test(e.message)
+            ? e.message
+            : "Could not load this review page. Please try again.";
+        setErrorMsg(message);
         setStep("error");
-      });
+      }
+    }
+
+    void loadQuestions();
+    return () => {
+      cancelled = true;
+    };
   }, [slug]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -63,7 +91,23 @@ export default function CustomerReviewPage({
         }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const raw = await res.text();
+      let data: {
+        error?: string;
+        draftText?: string;
+        sentiment?: "positive" | "neutral" | "negative" | null;
+        googleUrl?: string | null;
+        whatsappUrl?: string | null;
+        sessionId?: string | null;
+      } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        setErrorMsg("We couldn't write a review this time. Please try again.");
+        setStep("error");
+        return;
+      }
+
       if (!res.ok) {
         setErrorMsg(data.error ?? "Something went wrong");
         setStep("error");
@@ -76,7 +120,7 @@ export default function CustomerReviewPage({
       }
       setDraft(data.draftText);
       setSentiment(data.sentiment ?? null);
-      setGoogleUrl(data.googleUrl);
+      setGoogleUrl(data.googleUrl ?? null);
       setWhatsappUrl(data.whatsappUrl ?? null);
       setSessionId(data.sessionId ?? null);
       setStep("done");

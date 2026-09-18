@@ -114,11 +114,27 @@ async function generateGeminiTextForModel(
     );
   }
 
-  const data = await res.json();
+  // Read as text first so truncated/corrupt bodies become a clear throw
+  // (fallback models / backlog can recover) instead of a vague JSON parse error.
+  const raw = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `Gemini returned invalid JSON (${model}, ${raw.length} bytes)`
+    );
+  }
+  const data = parsed as {
+    candidates?: Array<{
+      content?: { parts?: { text?: string; thought?: boolean }[] };
+      finishReason?: string;
+    }>;
+  };
   const text = extractAnswerText(data);
 
   if (!text) {
-    const finishReason = (data.candidates?.[0] as { finishReason?: string } | undefined)?.finishReason;
+    const finishReason = data.candidates?.[0]?.finishReason;
     throw new Error(
       `Gemini returned an empty response (${model})${finishReason ? ` (finishReason: ${finishReason})` : ""}`
     );
