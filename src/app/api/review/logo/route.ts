@@ -12,11 +12,11 @@ export async function GET(req: NextRequest) {
   if (!slug) return NextResponse.json({ error: "slug required" }, { status: 400 });
 
   const [business] = await db
-    .select({ logoUrl: businesses.logoUrl })
+    .select({ logoUrl: businesses.logoUrl, enabled: businesses.enabled })
     .from(businesses)
     .where(eq(businesses.slug, slug));
 
-  if (!business?.logoUrl) {
+  if (!business?.logoUrl || !business.enabled) {
     return new NextResponse(null, { status: 404 });
   }
 

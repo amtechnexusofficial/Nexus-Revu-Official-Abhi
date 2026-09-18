@@ -23,6 +23,9 @@ export async function GET(req: NextRequest) {
 
     const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
     if (!business) return json({ error: "Business not found" }, 404);
+    if (!business.enabled) {
+      return json({ error: "This review link is currently unavailable." }, 403);
+    }
 
     const pool = await db
       .select()

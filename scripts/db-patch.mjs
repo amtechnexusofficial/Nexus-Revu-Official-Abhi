@@ -58,6 +58,9 @@ async function main() {
   console.log("Adding whatsapp_number column…");
   await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS whatsapp_number text`;
 
+  console.log("Adding enabled column on businesses…");
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`;
+
   console.log("Adding always_ask column on questions…");
   await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS always_ask boolean NOT NULL DEFAULT false`;
 

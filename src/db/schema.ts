@@ -35,6 +35,8 @@ export const businesses = pgTable("businesses", {
   googlePlaceId: text("google_place_id"), // needed to build the "write a review" deep link
   // Optional management WhatsApp (digits with country code). Used for negative-review deep links.
   whatsappNumber: text("whatsapp_number"),
+  // When false, customer QR / review flow is blocked (admin billing control).
+  enabled: boolean("enabled").notNull().default(true),
   // When set, backlog refill should not retry Gemini until this time (API failure cooldown).
   backlogRefillAfter: timestamp("backlog_refill_after"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

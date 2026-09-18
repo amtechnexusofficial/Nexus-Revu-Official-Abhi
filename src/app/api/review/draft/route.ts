@@ -78,6 +78,12 @@ export async function POST(req: NextRequest) {
 
     const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
     if (!business) return NextResponse.json({ error: "Business not found" }, { status: 404 });
+    if (!business.enabled) {
+      return NextResponse.json(
+        { error: "This review link is currently unavailable." },
+        { status: 403 }
+      );
+    }
 
     // Top up backlog when cooldown allows (no-op if full or still cooling down).
     scheduleBacklogRefill(business.id);

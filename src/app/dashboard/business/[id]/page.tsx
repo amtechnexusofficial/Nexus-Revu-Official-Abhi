@@ -19,6 +19,7 @@ type Business = {
   googlePlaceId: string | null;
   whatsappNumber: string | null;
   slug: string;
+  enabled: boolean;
 };
 
 type Tab = "details" | "questions" | "qr";
@@ -50,6 +51,7 @@ export default function BusinessDetailPage({
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [detailsMessage, setDetailsMessage] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [togglingEnabled, setTogglingEnabled] = useState(false);
 
   const [reviewQrDataUrl, setReviewQrDataUrl] = useState<string | null>(null);
   const [reviewUrl, setReviewUrl] = useState<string | null>(null);
@@ -208,6 +210,32 @@ export default function BusinessDetailPage({
     setDetailsMessage("Saved.");
   }
 
+  async function handleToggleEnabled() {
+    if (isNew || !business || togglingEnabled) return;
+    const next = !(business.enabled !== false);
+    setDetailsError(null);
+    setDetailsMessage(null);
+    setTogglingEnabled(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDetailsError(data.error ?? "Could not update status");
+        return;
+      }
+      setBusiness(data.business);
+      setDetailsMessage(next ? "Customer QR enabled." : "Customer QR disabled.");
+    } catch {
+      setDetailsError("Could not update status");
+    } finally {
+      setTogglingEnabled(false);
+    }
+  }
+
   async function handleDownloadReviewQr() {
     if (!reviewQrDataUrl || !business) return;
     setDownloadingReviewQr(true);
@@ -255,13 +283,52 @@ export default function BusinessDetailPage({
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-4">
         <div className="min-w-0">
-          <h1 className="font-display text-xl text-ink sm:text-2xl">
-            {isNew ? "Add a business" : business?.name}
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="font-display text-xl text-ink sm:text-2xl">
+              {isNew ? "Add a business" : business?.name}
+            </h1>
+            {!isNew && business && (
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                  business.enabled !== false
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-red-50 text-red-700"
+                }`}
+              >
+                {business.enabled !== false ? "Enabled" : "Disabled"}
+              </span>
+            )}
+          </div>
           <p className="truncate text-sm text-ink/60">
             {isNew ? "Fill in the details, then set up their review questions." : business?.address}
           </p>
         </div>
+        {!isNew && business && (
+          <div className="card flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">Customer review QR</p>
+              <p className="mt-0.5 text-xs text-ink/55">
+                {business.enabled !== false
+                  ? "Scans work normally. Disable if this client has not paid."
+                  : "Customer QR is blocked. Questions QR still works for them."}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleEnabled}
+              disabled={togglingEnabled}
+              className={`btn-secondary w-full shrink-0 sm:w-auto ${
+                business.enabled !== false ? "border-red-200 text-red-700 hover:bg-red-50" : ""
+              }`}
+            >
+              {togglingEnabled
+                ? "Updating…"
+                : business.enabled !== false
+                  ? "Disable"
+                  : "Enable"}
+            </button>
+          </div>
+        )}
         <div className="grid w-full grid-cols-3 gap-0.5 rounded-full bg-brand-light p-1 sm:inline-grid sm:w-auto sm:gap-1">
           {tabs.map((t) => (
             <button

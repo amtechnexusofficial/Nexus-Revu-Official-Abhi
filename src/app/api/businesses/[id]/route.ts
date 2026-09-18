@@ -33,8 +33,30 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const existing = await loadOwned(id, adminId);
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { name, address, category, description, reviewThemes, logoUrl, googlePlaceId, whatsappNumber } =
-    await req.json();
+  const body = await req.json();
+
+  // Admin-only billing toggle — keep this separate from manage-QR detail edits.
+  if (
+    typeof body.enabled === "boolean" &&
+    body.name === undefined &&
+    body.address === undefined &&
+    body.category === undefined &&
+    body.description === undefined &&
+    body.reviewThemes === undefined &&
+    body.logoUrl === undefined &&
+    body.googlePlaceId === undefined &&
+    body.whatsappNumber === undefined
+  ) {
+    const [updated] = await db
+      .update(businesses)
+      .set({ enabled: body.enabled })
+      .where(eq(businesses.id, id))
+      .returning();
+    return NextResponse.json({ business: updated });
+  }
+
+  const { name, address, category, description, reviewThemes, logoUrl, googlePlaceId, whatsappNumber, enabled } =
+    body;
 
   const validationError = validateBusinessDetails({
     name,
@@ -79,6 +101,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       ...(normalizedLogo !== undefined && { logoUrl: normalizedLogo }),
       googlePlaceId: details.googlePlaceId,
       whatsappNumber: details.whatsappNumber,
+      ...(typeof enabled === "boolean" && { enabled }),
     })
     .where(eq(businesses.id, id))
     .returning();
