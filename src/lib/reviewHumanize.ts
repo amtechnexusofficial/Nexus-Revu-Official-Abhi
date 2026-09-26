@@ -2,12 +2,31 @@
  * Cleans model output so reviews read like a person typed them, not marketing copy.
  */
 /** ~1 in 3 reviews start lowercase for a casual note feel. */
-const CASUAL_LOWER_FIRST_CHANCE = 0.35;
+const CASUAL_LOWER_FIRST_CHANCE = 0.4;
 /** ~1 in 3 reviews drop the trailing period. */
-const DROP_FINAL_PERIOD_CHANCE = 0.35;
+const DROP_FINAL_PERIOD_CHANCE = 0.4;
 
-/** Stripped post-generation if the model slips marketing language through. Longest first. */
+/** Stripped post-generation if the model slips marketing / corporate language through. Longest first. */
 const MARKETING_PHRASES = [
+  "will definitely be visiting again",
+  "will be visiting again",
+  "would definitely come back",
+  "would definitely be back",
+  "will definitely come back",
+  "will definitely be back",
+  "would love to come back",
+  "looking forward to coming back",
+  "looking forward to visiting again",
+  "can't wait to come back",
+  "can't wait to go back",
+  "cant wait to go back",
+  "will be back soon",
+  "we'll be back",
+  "we will be back",
+  "i'll be back",
+  "i will be back",
+  "see you soon",
+  "until next time",
   "highly recommended",
   "highly recommend",
   "amazing experience",
@@ -17,8 +36,6 @@ const MARKETING_PHRASES = [
   "went above and beyond",
   "above and beyond",
   "you won't be disappointed",
-  "will definitely be back",
-  "can't wait to go back",
   "exceeded expectations",
   "cannot say enough",
   "can't say enough",
@@ -49,6 +66,15 @@ function stripMarketingPhrases(text: string): string {
   for (const phrase of MARKETING_PHRASES) {
     s = s.replace(new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "gi"), "");
   }
+  // Strip leftover corporate return closers that slipped past exact phrases.
+  s = s.replace(
+    /(?:^|[.!?]\s*)(?:i|we)(?:'d| would| will|'ll)?\s+(?:definitely\s+)?(?:be\s+)?(?:coming|going|visiting)\s+back(?:\s+again)?[.!]?\s*$/gi,
+    ""
+  );
+  s = s.replace(
+    /(?:^|[.!?]\s*)(?:looking\s+forward\s+to\s+(?:coming|visiting)\s+again)[.!]?\s*$/gi,
+    ""
+  );
   return s;
 }
 

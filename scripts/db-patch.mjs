@@ -61,6 +61,14 @@ async function main() {
   console.log("Adding enabled column on businesses…");
   await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`;
 
+  console.log("Adding billing columns on businesses…");
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS billing_mode text NOT NULL DEFAULT 'manual'`;
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS billing_bypass boolean NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS razorpay_subscription_id text`;
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS razorpay_subscription_status text`;
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS paid_until timestamp`;
+  await sql`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS razorpay_yearly_amount integer NOT NULL DEFAULT 2500`;
+
   console.log("Adding always_ask column on questions…");
   await sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS always_ask boolean NOT NULL DEFAULT false`;
 

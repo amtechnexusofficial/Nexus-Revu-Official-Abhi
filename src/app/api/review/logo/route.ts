@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
+import { isCustomerQrActive } from "@/lib/billing";
 import { eq } from "drizzle-orm";
 
 /**
@@ -12,11 +13,17 @@ export async function GET(req: NextRequest) {
   if (!slug) return NextResponse.json({ error: "slug required" }, { status: 400 });
 
   const [business] = await db
-    .select({ logoUrl: businesses.logoUrl, enabled: businesses.enabled })
+    .select({
+      logoUrl: businesses.logoUrl,
+      enabled: businesses.enabled,
+      billingMode: businesses.billingMode,
+      razorpaySubscriptionStatus: businesses.razorpaySubscriptionStatus,
+      paidUntil: businesses.paidUntil,
+    })
     .from(businesses)
     .where(eq(businesses.slug, slug));
 
-  if (!business?.logoUrl || !business.enabled) {
+  if (!business?.logoUrl || !isCustomerQrActive(business)) {
     return new NextResponse(null, { status: 404 });
   }
 

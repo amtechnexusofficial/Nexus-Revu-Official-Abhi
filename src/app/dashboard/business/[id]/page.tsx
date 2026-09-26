@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import { fileToLogoDataUrl } from "@/lib/logoUpload";
 import { downloadQrImage, downloadQuestionsQrImage, buildQrDownloadFilename } from "@/lib/qrDownload";
+import { generateQrDataUrl, QR_PREVIEW_SIZE, QR_PRINT_SIZE } from "@/lib/qr";
 import { themesToText } from "@/lib/reviewThemes";
 import { QrFlyerPreview } from "@/components/QrFlyerPreview";
 import { QuestionsQrPreview } from "@/components/QuestionsQrPreview";
@@ -19,10 +20,30 @@ type Business = {
   googlePlaceId: string | null;
   whatsappNumber: string | null;
   slug: string;
+  manageToken?: string | null;
   enabled: boolean;
+  billingMode: "manual" | "razorpay";
+  razorpayYearlyAmount?: number | null;
+  razorpaySubscriptionStatus: string | null;
+  paidUntil: string | null;
 };
 
 type Tab = "details" | "questions" | "qr";
+
+function appOrigin() {
+  if (typeof window === "undefined") return "";
+  return window.location.origin;
+}
+
+function urlsFromBusiness(b: { manageToken?: string | null; slug?: string | null }) {
+  const origin = appOrigin();
+  const token = b.manageToken?.trim();
+  return {
+    payUrl: token ? `${origin}/pay/${token}` : null,
+    manageUrl: token ? `${origin}/q/${token}` : null,
+    reviewUrl: b.slug ? `${origin}/r/${b.slug}` : null,
+  };
+}
 
 export default function BusinessDetailPage({
   params,
@@ -47,16 +68,24 @@ export default function BusinessDetailPage({
   const [logoUrl, setLogoUrl] = useState("");
   const [googlePlaceId, setGooglePlaceId] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("");
+  const [billingMode, setBillingMode] = useState<"manual" | "razorpay">("manual");
+  const [razorpayYearlyAmount, setRazorpayYearlyAmount] = useState<1500 | 2500>(2500);
   const [savingDetails, setSavingDetails] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [detailsMessage, setDetailsMessage] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [togglingEnabled, setTogglingEnabled] = useState(false);
+  const [copyFromId, setCopyFromId] = useState("");
+  const [copyOptions, setCopyOptions] = useState<{ id: string; name: string }[]>([]);
+  const [copyingFrom, setCopyingFrom] = useState(false);
+  const [copyHint, setCopyHint] = useState<string | null>(null);
 
   const [reviewQrDataUrl, setReviewQrDataUrl] = useState<string | null>(null);
   const [reviewUrl, setReviewUrl] = useState<string | null>(null);
   const [manageQrDataUrl, setManageQrDataUrl] = useState<string | null>(null);
   const [manageUrl, setManageUrl] = useState<string | null>(null);
+  const [payUrl, setPayUrl] = useState<string | null>(null);
+  const [copiedPayLink, setCopiedPayLink] = useState(false);
   const [downloadingReviewQr, setDownloadingReviewQr] = useState(false);
   const [downloadingQuestionsQr, setDownloadingQuestionsQr] = useState(false);
   const [backlog, setBacklog] = useState<{
@@ -108,41 +137,154 @@ export default function BusinessDetailPage({
   }
 
   useEffect(() => {
+    if (!isNew) return;
+    fetch("/api/businesses")
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) return;
+        setCopyOptions(
+          (data.businesses ?? []).map((b: { id: string; name: string }) => ({
+            id: b.id,
+            name: b.name,
+          }))
+        );
+      })
+      .catch(() => {
+        // ignore — copy is optional
+      });
+  }, [isNew]);
+
+  useEffect(() => {
     if (isNew) return;
+    let cancelled = false;
+
     fetch(`/api/businesses/${id}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setBusiness(data.business);
-        setName(data.business.name ?? "");
-        setAddress(data.business.address ?? "");
-        setCategory(data.business.category ?? "");
-        setDescription(data.business.description ?? "");
-        setReviewThemesText(themesToText(data.business.reviewThemes));
-        setLogoUrl(data.business.logoUrl ?? "");
-        setGooglePlaceId(data.business.googlePlaceId ?? "");
-        setWhatsappNumber(data.business.whatsappNumber ?? "");
-        setLoading(false);
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error ?? "Failed to load");
+        if (cancelled) return;
+        const biz = data.business as Business;
+        setBusiness(biz);
+        setName(biz.name ?? "");
+        setAddress(biz.address ?? "");
+        setCategory(biz.category ?? "");
+        setDescription(biz.description ?? "");
+        setReviewThemesText(themesToText(biz.reviewThemes));
+        setLogoUrl(biz.logoUrl ?? "");
+        setGooglePlaceId(biz.googlePlaceId ?? "");
+        setWhatsappNumber(biz.whatsappNumber ?? "");
+        setBillingMode(biz.billingMode === "razorpay" ? "razorpay" : "manual");
+        setRazorpayYearlyAmount(biz.razorpayYearlyAmount === 1500 ? 1500 : 2500);
+        const urls = urlsFromBusiness(biz);
+        setPayUrl(urls.payUrl);
+        setManageUrl(urls.manageUrl);
+        setReviewUrl(urls.reviewUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setDetailsError("Could not load this business. Try refreshing.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
+
     fetch(`/api/businesses/${id}/questions`)
-      .then((r) => r.json())
-      .then((data) => setQuestionCount((data.questions ?? []).length));
-    fetch(`/api/businesses/${id}/qr`)
-      .then((r) => r.json())
-      .then((data) => {
-        setReviewQrDataUrl(data.reviewQrDataUrl ?? data.qrDataUrl);
-        setReviewUrl(data.reviewUrl);
-        setManageQrDataUrl(data.manageQrDataUrl);
-        setManageUrl(data.manageUrl);
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || cancelled) return;
+        setQuestionCount((data.questions ?? []).length);
+      })
+      .catch(() => {
+        // optional
       });
+
     fetch(`/api/businesses/${id}/backlog`)
-      .then((r) => r.json())
-      .then((data) => {
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || cancelled) return;
         if (data.backlog) applyBacklogPayload(data.backlog);
       })
       .catch(() => {
         // Backlog endpoint may fail before DB patch — ignore on load
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [id, isNew]);
+
+  // Rebuild preview QR when the target URL changes.
+  useEffect(() => {
+    setReviewQrDataUrl(null);
+  }, [reviewUrl]);
+  useEffect(() => {
+    setManageQrDataUrl(null);
+  }, [manageUrl]);
+
+  // Fast client-side preview QRs when the relevant tab opens.
+  useEffect(() => {
+    if (isNew) return;
+    if (tab !== "qr" && tab !== "questions") return;
+    let cancelled = false;
+
+    async function buildPreview() {
+      try {
+        if (tab === "qr" && reviewUrl && !reviewQrDataUrl) {
+          const url = await generateQrDataUrl(reviewUrl, { width: QR_PREVIEW_SIZE });
+          if (!cancelled) setReviewQrDataUrl(url);
+        }
+        if (tab === "questions" && manageUrl && !manageQrDataUrl) {
+          const url = await generateQrDataUrl(manageUrl, { width: QR_PREVIEW_SIZE });
+          if (!cancelled) setManageQrDataUrl(url);
+        }
+      } catch {
+        if (!cancelled) setDetailsError("Could not generate QR preview. Try refreshing.");
+      }
+    }
+
+    void buildPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, isNew, tab, reviewUrl, manageUrl, reviewQrDataUrl, manageQrDataUrl]);
+
+  async function handleCopyFromChange(sourceId: string) {
+    setCopyFromId(sourceId);
+    setCopyHint(null);
+    setDetailsError(null);
+    if (!sourceId) return;
+
+    setCopyingFrom(true);
+    try {
+      const [bizRes, qRes] = await Promise.all([
+        fetch(`/api/businesses/${encodeURIComponent(sourceId)}`),
+        fetch(`/api/businesses/${encodeURIComponent(sourceId)}/questions`),
+      ]);
+      const bizData = await bizRes.json().catch(() => ({}));
+      const qData = await qRes.json().catch(() => ({}));
+      if (!bizRes.ok) {
+        setDetailsError(bizData.error ?? "Could not load source business");
+        setCopyFromId("");
+        return;
+      }
+
+      const src = bizData.business;
+      setDescription(src.description ?? "");
+      setReviewThemesText(themesToText(src.reviewThemes));
+      if (!category.trim() && src.category) setCategory(src.category);
+
+      const qCount = (qData.questions ?? []).length;
+      setCopyHint(
+        qCount > 0
+          ? `Copied description and review themes. ${qCount} question${qCount === 1 ? "" : "s"} will be copied when you create this business.`
+          : "Copied description and review themes. No questions to copy from that business."
+      );
+    } catch {
+      setDetailsError("Could not load source business");
+      setCopyFromId("");
+    } finally {
+      setCopyingFrom(false);
+    }
+  }
 
   async function handleLogoFile(file: File | null) {
     if (!file) return;
@@ -176,6 +318,9 @@ export default function BusinessDetailPage({
       logoUrl,
       googlePlaceId,
       whatsappNumber,
+      billingMode,
+      razorpayYearlyAmount: billingMode === "razorpay" ? razorpayYearlyAmount : undefined,
+      ...(isNew && copyFromId ? { copyFromBusinessId: copyFromId } : {}),
     };
 
     if (isNew) {
@@ -207,6 +352,12 @@ export default function BusinessDetailPage({
       return;
     }
     setBusiness(data.business);
+    setBillingMode(data.business.billingMode === "razorpay" ? "razorpay" : "manual");
+    setRazorpayYearlyAmount(data.business.razorpayYearlyAmount === 1500 ? 1500 : 2500);
+    const urls = urlsFromBusiness(data.business);
+    if (urls.payUrl) setPayUrl(urls.payUrl);
+    if (urls.manageUrl) setManageUrl(urls.manageUrl);
+    if (urls.reviewUrl) setReviewUrl(urls.reviewUrl);
     setDetailsMessage("Saved.");
   }
 
@@ -228,7 +379,7 @@ export default function BusinessDetailPage({
         return;
       }
       setBusiness(data.business);
-      setDetailsMessage(next ? "Customer QR enabled." : "Customer QR disabled.");
+      setDetailsMessage(next ? "Customer QR marked enabled." : "Customer QR disabled.");
     } catch {
       setDetailsError("Could not update status");
     } finally {
@@ -237,11 +388,12 @@ export default function BusinessDetailPage({
   }
 
   async function handleDownloadReviewQr() {
-    if (!reviewQrDataUrl || !business) return;
+    if (!reviewUrl || !business) return;
     setDownloadingReviewQr(true);
     try {
+      const hiResQr = await generateQrDataUrl(reviewUrl, { width: QR_PRINT_SIZE });
       await downloadQrImage(
-        reviewQrDataUrl,
+        hiResQr,
         buildQrDownloadFilename(business?.name ?? name, "CustomerQR"),
         { businessName: business?.name ?? name, logoUrl: business?.logoUrl ?? logoUrl }
       );
@@ -253,11 +405,12 @@ export default function BusinessDetailPage({
   }
 
   async function handleDownloadQuestionsQr() {
-    if (!manageQrDataUrl || !business) return;
+    if (!manageUrl || !business) return;
     setDownloadingQuestionsQr(true);
     try {
+      const hiResQr = await generateQrDataUrl(manageUrl, { width: QR_PRINT_SIZE });
       await downloadQuestionsQrImage(
-        manageQrDataUrl,
+        hiResQr,
         buildQrDownloadFilename(business?.name ?? name, "QuestionsQR"),
         {
           businessName: business?.name ?? name,
@@ -306,11 +459,12 @@ export default function BusinessDetailPage({
         {!isNew && business && (
           <div className="card flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-ink">Customer review QR</p>
+              <p className="text-sm font-medium text-ink">Customer review QR (admin)</p>
               <p className="mt-0.5 text-xs text-ink/55">
-                {business.enabled !== false
-                  ? "Scans work normally. Disable if this client has not paid."
-                  : "Customer QR is blocked. Questions QR still works for them."}
+                Master switch. Off always blocks the customer QR.
+                {business.billingMode === "razorpay"
+                  ? " For Razorpay clients, they must also have an active paid subscription."
+                  : " Manual billing: this switch alone controls the customer QR."}
               </p>
             </div>
             <button
@@ -348,6 +502,124 @@ export default function BusinessDetailPage({
 
       {tab === "details" && (
         <form onSubmit={handleSaveDetails} className="card flex flex-col gap-4">
+          {isNew && copyOptions.length > 0 && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-ink/80">
+                Copy from existing business
+              </label>
+              <select
+                className="input"
+                value={copyFromId}
+                disabled={copyingFrom || savingDetails}
+                onChange={(e) => void handleCopyFromChange(e.target.value)}
+              >
+                <option value="">Start blank</option>
+                {copyOptions.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-ink/50">
+                Copies description, review themes, and questions. Name, address, logo, and Google
+                place stay new.
+              </p>
+              {copyingFrom && <p className="mt-2 text-sm text-ink/55">Loading…</p>}
+              {copyHint && !copyingFrom && (
+                <p className="mt-2 text-sm text-brand">{copyHint}</p>
+              )}
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-sm font-medium text-ink/80">Billing</label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:gap-4">
+              <label className="flex items-center gap-2 text-sm text-ink/80">
+                <input
+                  type="radio"
+                  name="billingMode"
+                  checked={billingMode === "manual"}
+                  onChange={() => setBillingMode("manual")}
+                />
+                Manual payment (you enable/disable)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-ink/80">
+                <input
+                  type="radio"
+                  name="billingMode"
+                  checked={billingMode === "razorpay"}
+                  onChange={() => setBillingMode("razorpay")}
+                />
+                Razorpay (owner pays online)
+              </label>
+            </div>
+            {billingMode === "razorpay" && (
+              <div className="mt-3">
+                <p className="mb-2 text-sm font-medium text-ink/80">Yearly amount</p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:gap-4">
+                  <label className="flex items-center gap-2 text-sm text-ink/80">
+                    <input
+                      type="radio"
+                      name="razorpayYearlyAmount"
+                      checked={razorpayYearlyAmount === 2500}
+                      onChange={() => setRazorpayYearlyAmount(2500)}
+                    />
+                    ₹2,500 / year
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-ink/80">
+                    <input
+                      type="radio"
+                      name="razorpayYearlyAmount"
+                      checked={razorpayYearlyAmount === 1500}
+                      onChange={() => setRazorpayYearlyAmount(1500)}
+                    />
+                    ₹1,500 / year
+                  </label>
+                </div>
+                <p className="mt-1 text-xs text-ink/50">
+                  Shown on the payment link and Billing tab. Save details to apply.
+                </p>
+              </div>
+            )}
+            {!isNew && billingMode === "razorpay" && payUrl && (
+              <div className="mt-3 rounded-card border border-ink/10 bg-brand-light/40 p-3">
+                <p className="text-sm font-medium text-ink">Payment link</p>
+                <p className="mt-0.5 text-xs text-ink/55">
+                  Send this to the business owner. Payment only — no questions UI.
+                </p>
+                <p className="mt-2 break-all text-xs text-ink/70">{payUrl}</p>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    className="btn-secondary w-full sm:w-auto"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(payUrl);
+                        setCopiedPayLink(true);
+                        setTimeout(() => setCopiedPayLink(false), 2000);
+                      } catch {
+                        setDetailsError("Could not copy link");
+                      }
+                    }}
+                  >
+                    {copiedPayLink ? "Copied" : "Copy payment link"}
+                  </button>
+                  <a
+                    href={payUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-secondary w-full text-center sm:w-auto"
+                  >
+                    Open
+                  </a>
+                </div>
+              </div>
+            )}
+            {!isNew && billingMode === "razorpay" && !payUrl && (
+              <p className="mt-2 text-xs text-ink/50">
+                Save details once if the payment link does not appear, then refresh.
+              </p>
+            )}
+          </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-ink/80">Business name</label>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -568,7 +840,7 @@ export default function BusinessDetailPage({
           />
           {manageUrl && <p className="break-all text-xs text-ink/50">{manageUrl}</p>}
           <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
-            {manageQrDataUrl && (
+            {manageUrl && (
               <button
                 type="button"
                 onClick={handleDownloadQuestionsQr}
@@ -601,7 +873,7 @@ export default function BusinessDetailPage({
           />
           {reviewUrl && <p className="break-all text-xs text-ink/50">{reviewUrl}</p>}
           <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
-            {reviewQrDataUrl && (
+            {reviewUrl && (
               <button
                 type="button"
                 onClick={handleDownloadReviewQr}

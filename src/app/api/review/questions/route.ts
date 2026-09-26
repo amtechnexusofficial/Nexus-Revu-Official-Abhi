@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, questions } from "@/db/schema";
 import { pickQuestionCount, pickRandomQuestions } from "@/lib/reviewDraft";
-import { errorDetail, logAppError } from "@/lib/errorLog";
+import { isCustomerQrActive } from "@/lib/billing";
+import { errorDetail, formatErrorDetail, logAppError } from "@/lib/errorLog";
 import { eq, and } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
 
     const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
     if (!business) return json({ error: "Business not found" }, 404);
-    if (!business.enabled) {
+    if (!isCustomerQrActive(business)) {
       return json({ error: "This review link is currently unavailable." }, 403);
     }
 
@@ -56,7 +57,10 @@ export async function GET(req: NextRequest) {
       source: "review_questions_api",
       message: "Could not load this review page. Please try again.",
       slug,
-      detail: errorDetail(err),
+      detail: formatErrorDetail({
+        stage: "questions_route_exception",
+        error: errorDetail(err),
+      }),
     });
     return json({ error: "Could not load this review page. Please try again." }, 503);
   }

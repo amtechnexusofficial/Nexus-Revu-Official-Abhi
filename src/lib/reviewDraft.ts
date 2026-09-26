@@ -35,7 +35,7 @@ export function draftReview(
       middle = `A solid ${category.toLowerCase()} spot`;
     }
     return {
-      draftText: `Had a great time at ${businessName}. ${middle}. Would definitely come back.`,
+      draftText: `Had a good time at ${businessName}. ${middle}`,
       sentiment: "positive",
     };
   }

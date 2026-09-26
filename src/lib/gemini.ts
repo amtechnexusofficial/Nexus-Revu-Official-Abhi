@@ -9,6 +9,8 @@ import {
   pickVariationRetry,
   pickNoAnswerVariation,
   pickNoAnswerVariationRetry,
+  answersAllowReturnMention,
+  formatVoiceHardRules,
   type QA,
   type VariationBundle,
 } from "@/lib/reviewVariation";
@@ -20,7 +22,8 @@ export type GeminiDraftResult = {
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FALLBACK_MODEL = "gemini-3.5-flash-lite";
-const GEMINI_TIMEOUT_MS = 10000;
+/** Per-model wall clock — keep short so live drafts can fall back before CF 503s. */
+const GEMINI_TIMEOUT_MS = 8000;
 /** Enough for anti-repetition without bloating the prompt. */
 const MAX_RECENT_IN_PROMPT = 5;
 const PATTERN_TRUNCATE = 200;
@@ -209,7 +212,7 @@ const SELECTIVE_CONTEXT_RULES = `
 CONTEXT USAGE (important):
 - From the background description, use at most ONE or TWO details when needed. Never list every product or service.
 - Do not read the description like a menu or feature list.
-- Vary what you highlight across reviews (a product, service, atmosphere, staff, or would come back).`;
+- Vary what you highlight (a product, service, atmosphere, or staff) — not a polite "I'll be back" closer.`;
 
 const BANNED_OPENERS = [
   "I recently visited",
@@ -252,7 +255,16 @@ const BANNED_PHRASES = [
   "you won't be disappointed",
   "gem of a place",
   "can't wait to go back",
+  "can't wait to come back",
   "will definitely be back",
+  "will definitely come back",
+  "would definitely come back",
+  "will be visiting again",
+  "will be back soon",
+  "looking forward to visiting again",
+  "looking forward to coming back",
+  "see you soon",
+  "until next time",
   "exceeded expectations",
   "perfect experience",
   "truly wonderful",
@@ -274,20 +286,28 @@ ${BANNED_PHRASES.map((p) => `- "${p}"`).join("\n")}
 Prefer one plain specific detail from the answers over praise clichés.`;
 
 const WRITE_LIKE_RULES = `
-WRITE LIKE A REAL PERSON, NOT MARKETING:
-- First person, conversational — like a quick note, not an essay
-- Use contractions ("don't", "it's", "we'd")
+WRITE LIKE A REAL PERSON TYPING A QUICK NOTE (Indian English):
+- Everyday spoken Indian English — how people actually write Google reviews in India
+- Contractions where natural ("don't", "it's", "wasn't"); plain words like "quite good", "bit costly", "properly done", "staff was helpful" are fine
+- Light local flavour ok if it fits naturally (e.g. "only", "ya") — never force slang, Hinglish parody, or fake accent
+- Avoid Americanisms ("awesome", "y'all", "stoked", "the bomb", "super cute")
+- Imperfections are good: slightly messy wording, a fragment, trailing off
+- No corporate politeness or polished customer-service tone
 - No em dashes or en dashes; no hyphenated compounds (write "well behaved" not "well-behaved")
 - No semicolons or colons; simple punctuation only
-- Vary sentence length; short fragments are fine
-- Sound understated when ratings are good — "pretty good", "glad we came" beats gushing
-- Only use facts from the answers and business context — do not invent menu items, staff names, or details
+- NEVER use a rigid formula (opening + service note + closing)
+- Do NOT invent menu items, staff names, or details not in the answers/context
 - No emojis or hashtags`;
+
+const NO_RETURN_SIGN_OFF = `
+HARD RULE — NO RETURN / REVISIT SIGNOFFS:
+- Do NOT end with (or include) lines like "I'll be back", "will visit again", "would come back", "looking forward to coming back", "see you soon"
+- Only mention returning if the customer's own answers clearly talk about coming back / visiting again`;
 
 const CONSTRUCTIVE_TONE_RULES = `
 WHEN FEEDBACK IS MIXED OR NEGATIVE (low stars, complaints, disappointment):
 - Stay truthful to the answers — do NOT flip a bad experience into praise
-- Soften the tone: calm, polite, and constructive, not angry or dramatic
+- Calm and plain, not angry or dramatic — still everyday speech, not corporate soft-speak
 - Prefer plain specifics ("wait was long", "food was cold") over insults ("terrible", "worst", "awful", "never again")
 - No profanity, all-caps ranting, or attacks on staff by name
 - Keep it short — state what went wrong without stacking complaints
@@ -328,17 +348,27 @@ Background (accuracy only, do NOT recite the full list): ${description}`;
 }
 
 function formatVariationBlock(variation: VariationBundle, noAnswers: boolean): string {
-  const lines = variation.singleSentence
-    ? [
-        "- Format: one casual sentence only, no wrap-up or closing line",
-        `- Target length: about ${variation.targetWords} words max`,
-        `- Voice: ${variation.voiceSeed}`,
-      ]
-    : [
-        `- Target length: about ${variation.targetWords} words (not longer)`,
-        `- Structure: ${variation.structureSeed}`,
-        `- Voice: ${variation.voiceSeed}`,
-      ];
+  const lengthLines =
+    variation.lengthMode === "single"
+      ? [
+          "- Length mode: ONE casual sentence only — stop there",
+          `- Target: about ${variation.targetWords} words max`,
+        ]
+      : variation.lengthMode === "two_liner"
+        ? [
+            "- Length mode: TWO short lines, a bit disjointed (like a phone note) — not a polished paragraph",
+            `- Target: about ${variation.targetWords} words total`,
+          ]
+        : [
+            `- Length mode: short and uneven — about ${variation.targetWords} words, not a neat essay`,
+            `- Shape: ${variation.structureSeed}`,
+          ];
+
+  const lines = [
+    ...lengthLines,
+    "",
+    formatVoiceHardRules(variation.voice),
+  ];
   if (!noAnswers) {
     lines.push(
       `- Lead with this answer as your opening focus: Q: ${variation.leadQa.question} / A: ${variation.leadQa.answer}`
@@ -375,14 +405,21 @@ function buildLiteNoAnswersPrompt(
   business: BusinessContext,
   variation: VariationBundle
 ): string {
-  const lengthHint = variation.singleSentence
-    ? "One casual sentence only."
-    : `About ${variation.targetWords} words.`;
-  return `Write a short Google review for ${business.name}. Sound like a real person, not marketing copy.
+  const lengthHint =
+    variation.lengthMode === "single"
+      ? "One casual sentence only."
+      : variation.lengthMode === "two_liner"
+        ? "Two short disjointed lines max."
+        : `About ${variation.targetWords} words, uneven.`;
+  const v = variation.voice;
+  return `Write a short Google review for ${business.name} in spoken Indian English. Contractions, imperfect ok. Not marketing.
 ${business.category ? `Business type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Mention: ${variation.highlightTheme}` : ""}
 
-${lengthHint} First person, contractions ok, understated tone.
+${lengthHint} First person. No "I'll be back" / visit-again closer.
+VOICE (must be obvious): ${v.label}
+Do: ${v.dos[0]}
+Don't: ${v.donts[0]}
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
 }
@@ -392,10 +429,17 @@ function buildLiteReviewPrompt(
   qas: QA[],
   variation: VariationBundle
 ): string {
-  const lengthHint = variation.singleSentence
-    ? "One casual sentence only — no wrap-up."
-    : `About ${variation.targetWords} words.`;
-  return `Write a short Google review from these customer answers. Sound like a quick phone note, not an essay.
+  const lengthHint =
+    variation.lengthMode === "single"
+      ? "One casual sentence only — no wrap-up."
+      : variation.lengthMode === "two_liner"
+        ? "Two short disjointed lines — not a polished paragraph."
+        : `About ${variation.targetWords} words, uneven.`;
+  const returnHint = answersAllowReturnMention(qas)
+    ? "Customer mentioned returning — you may briefly echo that."
+    : 'Do NOT say you\'ll be back / visit again.';
+  const v = variation.voice;
+  return `Write a short Google review from these customer answers in spoken Indian English. Everyday speech, contractions, imperfect ok — not an essay.
 
 Business: ${business.name}
 ${business.category ? `Type: ${business.category}` : ""}
@@ -404,7 +448,11 @@ Answers:
 ${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
 
 ${lengthHint} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
-If feedback is negative or mixed: stay truthful but calm and constructive — plain specifics, no insults or ranting. Do not rewrite a bad visit as praise.
+VOICE (must be obvious): ${v.label}
+Do: ${v.dos[0]}
+Don't: ${v.donts[0]}
+${returnHint}
+If feedback is negative or mixed: stay truthful but calm — plain specifics, no insults. Do not rewrite a bad visit as praise.
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
 }
@@ -414,7 +462,7 @@ function buildNoAnswersPrompt(
   variation: VariationBundle,
   recentDrafts: string[]
 ): string {
-  return `You are drafting a Google review for this business. The customer did not answer any questions — write a short, genuine positive review grounded in the business context below.
+  return `You are drafting a Google review for this business. The customer did not answer any questions — write a short, genuine positive note grounded in the business context below.
 
 ${formatBusinessContext(business, variation.highlightTheme)}
 
@@ -423,10 +471,13 @@ ${formatVariationBlock(variation, true)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${NO_RETURN_SIGN_OFF}
 ${formatWriteRules([
-  "Keep it positive and believable — friendly staff, good experience, would return",
+  "Keep it positive and believable without corporate politeness",
   "Stay true to the category and description — do not mention meals, dinner, or restaurant vibes unless that fits this business",
   "Do not invent specific menu items, staff names, or details beyond the context above",
+  "Never use opening + praise + I'll-be-back formula",
+  "Spoken Indian English — not American review-speak",
 ])}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
@@ -441,6 +492,7 @@ function buildReviewPrompt(
   variation: VariationBundle,
   recentDrafts: string[]
 ): string {
+  const allowReturn = answersAllowReturnMention(qas);
   return `You are drafting a Google review for this business from a real customer's quick answers.
 
 ${formatBusinessContext(business)}
@@ -453,14 +505,20 @@ ${formatVariationBlock(variation, false)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${allowReturn ? "" : NO_RETURN_SIGN_OFF}
 ${CONSTRUCTIVE_TONE_RULES}
 ${formatWriteRules([
   "Match tone honestly to star ratings in the answers",
   "Always stay true to the business category and description above — do not mention meals, dinner, or restaurant vibes unless that fits this business",
-  "No emojis or hashtags unless the customer's vibe clearly suggests it",
-  ...(variation.singleSentence
-    ? ["Write exactly one casual sentence — no wrap-up, no closing summary"]
-    : []),
+  "Spoken Indian English — not American review-speak",
+  allowReturn
+    ? "Customer answers mention returning — a brief natural echo is ok, not a corporate closer"
+    : "Do not add any return / visit-again signoff",
+  variation.lengthMode === "single"
+    ? "Write exactly one casual sentence — no wrap-up"
+    : variation.lengthMode === "two_liner"
+      ? "Write two short uneven lines — ok if they feel a bit disconnected"
+      : "Keep shape uneven — never opening + service note + closing",
 ])}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
@@ -533,7 +591,8 @@ async function generateOnce(
 export async function draftReviewWithGemini(
   business: BusinessContext,
   qas: QA[],
-  recentDrafts: string[] = []
+  recentDrafts: string[] = [],
+  options?: { antiRepeatRetry?: boolean }
 ): Promise<GeminiDraftResult> {
   const hasAnswers = qas.some((qa) => qa.answer.trim());
   const themes = (business.reviewThemes ?? []).filter((t) => t.trim());
@@ -544,7 +603,13 @@ export async function draftReviewWithGemini(
 
   let result = await generateOnce(business, qas, variation, recentDrafts);
 
-  if (recentDrafts.length > 0 && draftTooSimilar(result.draftText, recentDrafts)) {
+  // Live customer drafts skip the similarity re-roll — a second Gemini pass
+  // often pushes Cloudflare Workers past the request time limit (HTTP 503).
+  if (
+    options?.antiRepeatRetry !== false &&
+    recentDrafts.length > 0 &&
+    draftTooSimilar(result.draftText, recentDrafts)
+  ) {
     const retryVariation = hasAnswers
       ? pickVariationRetry(qas, variation)
       : pickNoAnswerVariationRetry(themes, variation);
@@ -566,7 +631,7 @@ export async function draftBacklogReviewWithGemini(
   const variation = pickNoAnswerVariation(themes);
   const tone =
     sentiment === "positive"
-      ? "Write a short positive review. Friendly, understated, would return."
+      ? "Write a short positive review. Friendly, understated, everyday speech. No I'll-be-back closer."
       : sentiment === "negative"
         ? "Write a short constructive negative review. Calm and specific (e.g. wait was long), not insulting. Do not praise the visit."
         : "Write a short mixed/neutral review. Okay but not great — something average about service, wait, or value.";
@@ -582,21 +647,26 @@ ${formatVariationBlock(variation, true)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${NO_RETURN_SIGN_OFF}
 ${CONSTRUCTIVE_TONE_RULES}
 ${formatWriteRules([
   `Return sentiment exactly as "${sentiment}"`,
   "Stay true to the category and description — do not invent menu items or staff names",
-  "About 25-40 words unless single-sentence variation says otherwise",
+  "Never use opening + praise + I'll-be-back formula",
+  "Spoken Indian English — not American review-speak",
 ])}
 
 Respond ONLY with JSON:
 {"draftText": "...", "sentiment": "${sentiment}"}`;
 
-  const litePrompt = `Write a short Google review for ${business.name}. Target sentiment: ${sentiment}.
+  const litePrompt = `Write a short Google review for ${business.name} in spoken Indian English. Target sentiment: ${sentiment}.
 ${business.category ? `Type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Angle: ${variation.highlightTheme}` : ""}
 ${tone}
-Sound like a real person. About 30 words.
+VOICE (must be obvious): ${variation.voice.label}
+Do: ${variation.voice.dos[0]}
+Don't: ${variation.voice.donts[0]}
+Everyday speech with contractions. About 25 words. No visit-again closer.
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
 

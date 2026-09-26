@@ -6,7 +6,12 @@ import type { QuestionType } from "@/lib/questionTypes";
 type Question = { id: string; text: string; type: QuestionType; options: string[] | null };
 type BusinessInfo = { name: string; logoUrl: string | null; slug: string };
 
-function reportClientError(slug: string, source: string, message: string, detail?: string) {
+function reportClientError(
+  slug: string,
+  source: string,
+  message: string,
+  detail?: Record<string, string | number | boolean | null | undefined> | string
+) {
   void fetch("/api/review/errors", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -62,7 +67,17 @@ export default function CustomerReviewPage({
             if (cancelled) return;
             return loadQuestions(attempt + 1);
           }
-          throw new Error("Could not load this review page. Please try again.");
+          const message = "Could not load this review page. Please try again.";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_questions_client", message, {
+            stage: "parse_questions",
+            attempt,
+            httpStatus: r.status,
+            bodyBytes: raw.length,
+            bodyPreview: raw.slice(0, 240).replace(/\s+/g, " "),
+          });
+          return;
         }
         if (!r.ok) {
           // Transient DB/cold-start failures — retry a few times on mobile networks.
@@ -71,10 +86,31 @@ export default function CustomerReviewPage({
             if (cancelled) return;
             return loadQuestions(attempt + 1);
           }
-          throw new Error(data.error || "Could not load this review page.");
+          const message = data.error || "Could not load this review page.";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_questions_client", message, {
+            stage: "questions_http_error",
+            attempt,
+            httpStatus: r.status,
+            apiError: data.error ?? null,
+            bodyBytes: raw.length,
+            bodyPreview: raw.slice(0, 240).replace(/\s+/g, " "),
+          });
+          return;
         }
         if (!data.questions?.length) {
-          throw new Error(data.error || "This business hasn't set up any questions yet");
+          const message = data.error || "This business hasn't set up any questions yet";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_questions_client", message, {
+            stage: "empty_questions",
+            attempt,
+            httpStatus: r.status,
+            apiError: data.error ?? null,
+            questionCount: Array.isArray(data.questions) ? data.questions.length : -1,
+          });
+          return;
         }
         if (cancelled) return;
         setBusiness(data.business ?? null);
@@ -95,12 +131,12 @@ export default function CustomerReviewPage({
             : "Could not load this review page. Please try again.";
         setErrorMsg(message);
         setStep("error");
-        reportClientError(
-          slug,
-          "review_questions_client",
-          message,
-          e instanceof Error ? `${e.name}: ${e.message}` : String(e)
-        );
+        reportClientError(slug, "review_questions_client", message, {
+          stage: aborted ? "questions_timeout" : "questions_exception",
+          attempt,
+          errorName: e instanceof Error ? e.name : "unknown",
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
       } finally {
         clearTimeout(timeoutId);
       }
@@ -118,80 +154,117 @@ export default function CustomerReviewPage({
     setStep("drafting");
     setErrorMsg("");
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 50000);
+    const payload = {
+      slug,
+      answers: questions.map((q) => ({
+        questionId: q.id,
+        question: q.text,
+        type: q.type,
+        answer: answers[q.id] ?? "",
+      })),
+    };
 
-    try {
-      const res = await fetch("/api/review/draft", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          slug,
-          answers: questions.map((q) => ({
-            questionId: q.id,
-            question: q.text,
-            type: q.type,
-            answer: answers[q.id] ?? "",
-          })),
-        }),
-      });
-
-      const raw = await res.text();
-      let data: {
-        error?: string;
-        draftText?: string;
-        sentiment?: "positive" | "neutral" | "negative" | null;
-        googleUrl?: string | null;
-        whatsappUrl?: string | null;
-        sessionId?: string | null;
-      } = {};
+    async function requestDraft(attempt: number): Promise<void> {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 50000);
       try {
-        data = raw ? JSON.parse(raw) : {};
-      } catch {
-        const message = "We couldn't write a review this time. Please try again.";
-        setErrorMsg(message);
-        setStep("error");
-        reportClientError(slug, "review_draft_client", message, `Invalid JSON (${raw.length} bytes)`);
-        return;
-      }
+        const res = await fetch("/api/review/draft", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify(payload),
+        });
 
-      if (!res.ok) {
-        const message = data.error ?? "Something went wrong";
+        const raw = await res.text();
+        let data: {
+          error?: string;
+          draftText?: string;
+          sentiment?: "positive" | "neutral" | "negative" | null;
+          googleUrl?: string | null;
+          whatsappUrl?: string | null;
+          sessionId?: string | null;
+        } = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+            return requestDraft(attempt + 1);
+          }
+          const message = "We couldn't write a review this time. Please try again.";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_draft_client", message, {
+            stage: "draft_invalid_json",
+            attempt,
+            httpStatus: res.status,
+            bodyBytes: raw.length,
+            bodyPreview: raw.slice(0, 240).replace(/\s+/g, " "),
+            likelyCloudflareKill: res.status === 502 || res.status === 503 || res.status === 504,
+          });
+          return;
+        }
+
+        if (!res.ok) {
+          if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+            return requestDraft(attempt + 1);
+          }
+          const message = data.error ?? "Something went wrong";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_draft_client", message, {
+            stage: "draft_http_error",
+            attempt,
+            httpStatus: res.status,
+            apiError: data.error ?? null,
+            bodyBytes: raw.length,
+            bodyPreview: raw.slice(0, 240).replace(/\s+/g, " "),
+            likelyCloudflareKill: res.status === 502 || res.status === 503 || res.status === 504,
+          });
+          return;
+        }
+        if (!data.draftText?.trim()) {
+          const message = "We couldn't write a review this time. Please try again.";
+          setErrorMsg(message);
+          setStep("error");
+          reportClientError(slug, "review_draft_client", message, {
+            stage: "draft_empty",
+            attempt,
+            httpStatus: res.status,
+            keys: Object.keys(data).join(","),
+          });
+          return;
+        }
+        setDraft(data.draftText);
+        setSentiment(data.sentiment ?? null);
+        setGoogleUrl(data.googleUrl ?? null);
+        setWhatsappUrl(data.whatsappUrl ?? null);
+        setSessionId(data.sessionId ?? null);
+        setStep("done");
+      } catch (err) {
+        const aborted = err instanceof Error && err.name === "AbortError";
+        if (!aborted && attempt < 3) {
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+          return requestDraft(attempt + 1);
+        }
+        const message = aborted
+          ? "This is taking too long. Please try again."
+          : "Something went wrong. Please try again.";
         setErrorMsg(message);
         setStep("error");
-        reportClientError(slug, "review_draft_client", message, `HTTP ${res.status}`);
-        return;
+        reportClientError(slug, "review_draft_client", message, {
+          stage: aborted ? "draft_client_timeout" : "draft_exception",
+          attempt,
+          errorName: err instanceof Error ? err.name : "unknown",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        clearTimeout(timeoutId);
       }
-      if (!data.draftText?.trim()) {
-        const message = "We couldn't write a review this time. Please try again.";
-        setErrorMsg(message);
-        setStep("error");
-        reportClientError(slug, "review_draft_client", message, "Empty draftText");
-        return;
-      }
-      setDraft(data.draftText);
-      setSentiment(data.sentiment ?? null);
-      setGoogleUrl(data.googleUrl ?? null);
-      setWhatsappUrl(data.whatsappUrl ?? null);
-      setSessionId(data.sessionId ?? null);
-      setStep("done");
-    } catch (err) {
-      const aborted = err instanceof Error && err.name === "AbortError";
-      const message = aborted
-        ? "This is taking too long. Please try again."
-        : "Something went wrong. Please try again.";
-      setErrorMsg(message);
-      setStep("error");
-      reportClientError(
-        slug,
-        "review_draft_client",
-        message,
-        err instanceof Error ? `${err.name}: ${err.message}` : String(err)
-      );
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    await requestDraft(1);
   }
 
   function trackAction(action: "post" | "whatsapp") {

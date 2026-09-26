@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, questions } from "@/db/schema";
 import {
-  normalizeQuestionsForInsert,
   validateQuestionSet,
   type IncomingQuestion,
 } from "@/lib/questions";
+import { billingPublicStatus } from "@/lib/billing";
+import { replaceBusinessQuestions } from "@/lib/replaceQuestions";
 import { eq } from "drizzle-orm";
 
 async function loadByToken(token: string) {
@@ -37,6 +38,7 @@ export async function GET(
       description: business.description,
       reviewThemes: business.reviewThemes,
       whatsappNumber: business.whatsappNumber,
+      ...billingPublicStatus(business),
     },
     questions: rows,
   });
@@ -54,17 +56,7 @@ export async function PUT(
   const error = validateQuestionSet(incoming ?? []);
   if (error) return NextResponse.json({ error }, { status: 400 });
 
-  await db.delete(questions).where(eq(questions.businessId, business.id));
-
-  if (incoming.length > 0) {
-    await db.insert(questions).values(normalizeQuestionsForInsert(business.id, incoming));
-  }
-
-  const saved = await db
-    .select()
-    .from(questions)
-    .where(eq(questions.businessId, business.id))
-    .orderBy(questions.position);
+  const saved = await replaceBusinessQuestions(business.id, incoming ?? []);
 
   return NextResponse.json({ questions: saved });
 }

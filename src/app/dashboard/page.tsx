@@ -10,6 +10,7 @@ type Business = {
   address: string | null;
   logoUrl: string | null;
   enabled?: boolean;
+  billingMode?: string;
 };
 
 type DeleteStep = "confirm" | "typeYes";
@@ -128,6 +129,11 @@ export default function HomePage() {
                     {b.enabled === false && (
                       <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700">
                         Disabled
+                      </span>
+                    )}
+                    {b.billingMode === "razorpay" && (
+                      <span className="rounded-full bg-ink/5 px-2 py-0.5 text-[10px] font-medium text-ink/60">
+                        Razorpay
                       </span>
                     )}
                   </div>

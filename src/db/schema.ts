@@ -37,6 +37,16 @@ export const businesses = pgTable("businesses", {
   whatsappNumber: text("whatsapp_number"),
   // When false, customer QR / review flow is blocked (admin billing control).
   enabled: boolean("enabled").notNull().default(true),
+  // How this business pays: "manual" (admin only) or "razorpay" (Questions QR checkout).
+  billingMode: text("billing_mode").notNull().default("manual"),
+  // Yearly Razorpay price in INR (1500 or 2500). Ignored for manual billing.
+  razorpayYearlyAmount: integer("razorpay_yearly_amount").notNull().default(2500),
+  // Legacy unused column (kept so existing DBs don't need a drop).
+  billingBypass: boolean("billing_bypass").notNull().default(false),
+  razorpaySubscriptionId: text("razorpay_subscription_id"),
+  razorpaySubscriptionStatus: text("razorpay_subscription_status"),
+  // End of current paid period (from Razorpay charge / subscription).
+  paidUntil: timestamp("paid_until"),
   // When set, backlog refill should not retry Gemini until this time (API failure cooldown).
   backlogRefillAfter: timestamp("backlog_refill_after"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

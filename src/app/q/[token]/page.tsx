@@ -6,12 +6,13 @@ import {
   EMPTY_QUESTION,
   type EditableQuestion,
 } from "@/components/QuestionEditor";
+import { BillingPanel } from "@/components/BillingPanel";
 import { needsOptions } from "@/lib/questionTypes";
 import { MAX_QUESTIONS } from "@/lib/questions";
 import { themesToText } from "@/lib/reviewThemes";
 import { fileToLogoDataUrl } from "@/lib/logoUpload";
 
-type Tab = "questions" | "details";
+type Tab = "questions" | "details" | "billing";
 
 export default function ManageQuestionsPage({
   params,
@@ -37,6 +38,7 @@ export default function ManageQuestionsPage({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [detailsMessage, setDetailsMessage] = useState<string | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [billingMode, setBillingMode] = useState<"manual" | "razorpay">("manual");
 
   useEffect(() => {
     fetch(`/api/manage/${encodeURIComponent(token)}/questions`)
@@ -48,6 +50,7 @@ export default function ManageQuestionsPage({
         setDescription(data.business.description ?? "");
         setReviewThemesText(themesToText(data.business.reviewThemes));
         setWhatsappNumber(data.business.whatsappNumber ?? "");
+        setBillingMode(data.business.billingMode === "razorpay" ? "razorpay" : "manual");
         const loaded = (data.questions ?? []).map(
           (q: EditableQuestion) => ({
             ...EMPTY_QUESTION,
@@ -197,6 +200,7 @@ export default function ManageQuestionsPage({
   const tabs: { id: Tab; label: string }[] = [
     { id: "questions", label: "Questions" },
     { id: "details", label: "Details" },
+    ...(billingMode === "razorpay" ? [{ id: "billing" as const, label: "Billing" }] : []),
   ];
 
   return (
@@ -215,7 +219,9 @@ export default function ManageQuestionsPage({
             <p className="text-xs text-ink/55">
               {tab === "questions"
                 ? `${count} / ${MAX_QUESTIONS} questions · edit & save`
-                : "Logo, description, themes & WhatsApp"}
+                : tab === "billing"
+                  ? "Yearly Razorpay subscription"
+                  : "Logo, description, themes & WhatsApp"}
             </p>
           </div>
         </div>
@@ -287,6 +293,8 @@ export default function ManageQuestionsPage({
             </div>
           </div>
         </>
+      ) : tab === "billing" ? (
+        <BillingPanel token={token} autoLoad />
       ) : (
         <form
           onSubmit={handleSaveDetails}

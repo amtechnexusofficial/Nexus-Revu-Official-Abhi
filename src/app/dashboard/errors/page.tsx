@@ -60,7 +60,8 @@ export default function ErrorsPage() {
         <div className="min-w-0">
           <h1 className="font-display text-xl text-ink sm:text-2xl">Errors</h1>
           <p className="mt-1 text-sm text-ink/60">
-            Customer review flow failures. Times are shown in IST.
+            Customer review flow failures with admin diagnostics. Times are shown in IST.
+            Customers only see a short friendly message.
           </p>
         </div>
         <label className="flex w-full flex-col gap-1.5 sm:w-64">
@@ -100,6 +101,7 @@ export default function ErrorsPage() {
                 <th className="px-4 py-3">Time (IST)</th>
                 <th className="px-4 py-3">Business</th>
                 <th className="px-4 py-3">Error</th>
+                <th className="px-4 py-3">Detail</th>
               </tr>
             </thead>
             <tbody>
@@ -114,6 +116,15 @@ export default function ErrorsPage() {
                   <td className="px-4 py-3 align-top">
                     <p className="font-medium text-ink">{row.message}</p>
                     <p className="mt-0.5 text-xs text-ink/45">{row.source}</p>
+                  </td>
+                  <td className="max-w-md px-4 py-3 align-top">
+                    {row.detail ? (
+                      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink/65">
+                        {row.detail}
+                      </pre>
+                    ) : (
+                      <span className="text-ink/40">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -29,12 +29,12 @@ function templateBacklogDraft(
     : businessName;
 
   if (sentiment === "positive") {
-    return `Stopped by ${businessName}. Pretty good overall, staff were friendly and I'd come back.`;
+    return `Stopped by ${businessName}. Pretty good overall and staff were friendly`;
   }
   if (sentiment === "negative") {
-    return `Visited ${businessName}. Wait felt long and things were a bit off. Hoping they sort it out.`;
+    return `Visited ${businessName}. Wait felt long and things were a bit off`;
   }
-  return `Tried ${spot}. It was fine, nothing special. Might go again if nearby.`;
+  return `Tried ${spot}. It was fine, nothing special`;
 }
 
 async function countBySentiment(businessId: string): Promise<Record<ReviewSentiment, number>> {

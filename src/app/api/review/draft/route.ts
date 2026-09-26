@@ -13,13 +13,33 @@ import {
   whatsappChatUrl,
 } from "@/lib/whatsapp";
 import { formatAnswerForDisplay, type QuestionType } from "@/lib/questionTypes";
-import { errorDetail, logAppError } from "@/lib/errorLog";
+import { isCustomerQrActive } from "@/lib/billing";
+import { errorDetail, formatErrorDetail, logAppError } from "@/lib/errorLog";
 import { desc, eq } from "drizzle-orm";
 
 type Body = {
   slug: string;
   answers: { questionId: string; question: string; type: QuestionType; answer: string | number }[];
 };
+
+/** Cap live Gemini so we fall back to backlog/template before Cloudflare kills the request. */
+const LIVE_GEMINI_BUDGET_MS = 12000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 async function buildDraft(
   business: {
@@ -28,25 +48,44 @@ async function buildDraft(
     category: string | null;
     description: string | null;
     reviewThemes: string[] | null;
+    slug: string;
   },
   formatted: { question: string; answer: string }[],
   recentDrafts: string[]
 ): Promise<{ draftText: string; sentiment: string; source: "gemini" | "backlog" | "template" }> {
   if (isGeminiConfigured()) {
     try {
-      const result = await draftReviewWithGemini(
-        {
-          name: business.name,
-          category: business.category,
-          description: business.description,
-          reviewThemes: business.reviewThemes,
-        },
-        formatted,
-        recentDrafts
+      const result = await withTimeout(
+        draftReviewWithGemini(
+          {
+            name: business.name,
+            category: business.category,
+            description: business.description,
+            reviewThemes: business.reviewThemes,
+          },
+          formatted,
+          recentDrafts,
+          { antiRepeatRetry: false }
+        ),
+        LIVE_GEMINI_BUDGET_MS,
+        "Gemini live draft budget exceeded"
       );
       return { ...result, source: "gemini" };
     } catch (err) {
       console.error("Gemini draft failed, trying backlog:", err);
+      // Admin-only: customer still gets a draft via backlog/template.
+      void logAppError({
+        source: "review_draft_gemini_fallback",
+        message: "Gemini failed; served backlog/template instead",
+        slug: business.slug,
+        businessId: business.id,
+        detail: formatErrorDetail({
+          stage: "gemini_failed_falling_back",
+          geminiBudgetMs: LIVE_GEMINI_BUDGET_MS,
+          answerCount: formatted.length,
+          error: errorDetail(err),
+        }),
+      });
     }
   }
 
@@ -78,15 +117,15 @@ export async function POST(req: NextRequest) {
 
     const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
     if (!business) return NextResponse.json({ error: "Business not found" }, { status: 404 });
-    if (!business.enabled) {
+    if (!isCustomerQrActive(business)) {
       return NextResponse.json(
         { error: "This review link is currently unavailable." },
         { status: 403 }
       );
     }
 
-    // Top up backlog when cooldown allows (no-op if full or still cooling down).
-    scheduleBacklogRefill(business.id);
+    // Do NOT start backlog refill here — concurrent Gemini calls during the
+    // customer draft are a common cause of Cloudflare HTTP 503s.
 
     const formatted = answers
       .map((a) => ({
@@ -151,6 +190,11 @@ export async function POST(req: NextRequest) {
           )
         : null;
 
+    // Refill after the customer response is ready (fire-and-forget).
+    if (source === "gemini") {
+      scheduleBacklogRefill(business.id);
+    }
+
     return NextResponse.json({
       sessionId: session.id,
       draftText,
@@ -165,7 +209,10 @@ export async function POST(req: NextRequest) {
       source: "review_draft_api",
       message: "Could not generate your review. Please try again.",
       slug: slugForLog,
-      detail: errorDetail(err),
+      detail: formatErrorDetail({
+        stage: "draft_route_exception",
+        error: errorDetail(err),
+      }),
     });
     return NextResponse.json(
       { error: "Could not generate your review. Please try again." },
