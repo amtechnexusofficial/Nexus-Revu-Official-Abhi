@@ -2,9 +2,26 @@ export type QA = { question: string; answer: string };
 
 export type LengthMode = "single" | "two_liner" | "short";
 
-export const TARGET_LENGTHS = [18, 24, 30, 38, 48] as const;
-export const SINGLE_SENTENCE_TARGET_LENGTHS = [10, 13, 16, 20] as const;
-export const TWO_LINER_TARGET_LENGTHS = [16, 22, 28, 34] as const;
+/** Length bands baked into the first Gemini prompt (no re-roll). */
+export type LengthBand = {
+  minWords: number;
+  maxWords: number;
+  /** At most this many sentences (single). */
+  maxSentences?: number;
+  /** Exactly this many sentences OR newline-separated lines (two_liner). */
+  exactUnits?: number;
+};
+
+export const LENGTH_BANDS: Record<LengthMode, LengthBand> = {
+  single: { minWords: 8, maxWords: 18, maxSentences: 1 },
+  two_liner: { minWords: 14, maxWords: 32, exactUnits: 2 },
+  short: { minWords: 28, maxWords: 55 },
+};
+
+/** Aim points inside each hard band (never outside). */
+export const TARGET_LENGTHS = [32, 38, 44, 50] as const;
+export const SINGLE_SENTENCE_TARGET_LENGTHS = [10, 12, 14, 16] as const;
+export const TWO_LINER_TARGET_LENGTHS = [18, 22, 26, 30] as const;
 
 /** Messy / non-formula shapes — never opening + service + closing. */
 export const STRUCTURE_SEEDS = [
@@ -173,9 +190,11 @@ If this draft could pass for a different voice, rewrite until THIS voice is clea
 
 function buildBundle(
   leadQa: QA,
-  extras?: Partial<Pick<VariationBundle, "contentFocusSeed" | "highlightTheme">>
+  extras?: Partial<Pick<VariationBundle, "contentFocusSeed" | "highlightTheme">> & {
+    lengthMode?: LengthMode;
+  }
 ): VariationBundle {
-  const lengthMode = pickLengthMode();
+  const lengthMode = extras?.lengthMode ?? pickLengthMode();
   const voice = pickVoice();
   return {
     targetWords: pickTargetWords(lengthMode),
@@ -189,6 +208,30 @@ function buildBundle(
       lengthMode === "short" ? extras?.contentFocusSeed : undefined,
     highlightTheme: extras?.highlightTheme,
   };
+}
+
+/** Prompt block: hard min/max (and shape) for this length mode. */
+export function formatLengthHardRule(
+  mode: LengthMode,
+  targetWords: number
+): string {
+  const band = LENGTH_BANDS[mode];
+  if (mode === "single") {
+    return `HARD RULE — LENGTH (must follow on the first try):
+- Mode: ONE casual sentence only — no second sentence, no wrap-up
+- Word count MUST be between ${band.minWords} and ${band.maxWords} (aim ~${targetWords})
+- Count the words before you finish — do not write a paragraph`;
+  }
+  if (mode === "two_liner") {
+    return `HARD RULE — LENGTH (must follow on the first try):
+- Mode: exactly TWO short lines (or two short sentences), a bit disjointed
+- Word count MUST be between ${band.minWords} and ${band.maxWords} total (aim ~${targetWords})
+- Count the words before you finish — not a polished single paragraph`;
+  }
+  return `HARD RULE — LENGTH (must follow on the first try):
+- Mode: short multi-beat review — uneven shape, not a neat essay
+- Word count MUST be between ${band.minWords} and ${band.maxWords} (aim ~${targetWords})
+- Count the words before you finish — do not collapse into one tiny sentence`;
 }
 
 export function pickVariation(qas: QA[]): VariationBundle {

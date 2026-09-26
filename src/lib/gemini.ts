@@ -11,6 +11,8 @@ import {
   pickNoAnswerVariationRetry,
   answersAllowReturnMention,
   formatVoiceHardRules,
+  formatLengthHardRule,
+  LENGTH_BANDS,
   type QA,
   type VariationBundle,
 } from "@/lib/reviewVariation";
@@ -348,27 +350,12 @@ Background (accuracy only, do NOT recite the full list): ${description}`;
 }
 
 function formatVariationBlock(variation: VariationBundle, noAnswers: boolean): string {
-  const lengthLines =
-    variation.lengthMode === "single"
-      ? [
-          "- Length mode: ONE casual sentence only — stop there",
-          `- Target: about ${variation.targetWords} words max`,
-        ]
-      : variation.lengthMode === "two_liner"
-        ? [
-            "- Length mode: TWO short lines, a bit disjointed (like a phone note) — not a polished paragraph",
-            `- Target: about ${variation.targetWords} words total`,
-          ]
-        : [
-            `- Length mode: short and uneven — about ${variation.targetWords} words, not a neat essay`,
-            `- Shape: ${variation.structureSeed}`,
-          ];
-
   const lines = [
-    ...lengthLines,
+    formatLengthHardRule(variation.lengthMode, variation.targetWords),
+    variation.lengthMode === "short" ? `- Shape: ${variation.structureSeed}` : "",
     "",
     formatVoiceHardRules(variation.voice),
-  ];
+  ].filter(Boolean);
   if (!noAnswers) {
     lines.push(
       `- Lead with this answer as your opening focus: Q: ${variation.leadQa.question} / A: ${variation.leadQa.answer}`
@@ -381,6 +368,17 @@ function formatVariationBlock(variation: VariationBundle, noAnswers: boolean): s
     lines.push(`- Primary highlight: ${variation.highlightTheme}`);
   }
   return lines.join("\n");
+}
+
+function lengthHintForLite(variation: VariationBundle): string {
+  const band = LENGTH_BANDS[variation.lengthMode];
+  if (variation.lengthMode === "single") {
+    return `HARD: exactly one sentence, ${band.minWords}-${band.maxWords} words (aim ~${variation.targetWords}).`;
+  }
+  if (variation.lengthMode === "two_liner") {
+    return `HARD: exactly two short lines/sentences, ${band.minWords}-${band.maxWords} words total (aim ~${variation.targetWords}).`;
+  }
+  return `HARD: ${band.minWords}-${band.maxWords} words, uneven multi-beat (aim ~${variation.targetWords}). Not one tiny sentence.`;
 }
 
 function formatRepetitionGuards(recentDrafts: string[]): string {
@@ -405,18 +403,12 @@ function buildLiteNoAnswersPrompt(
   business: BusinessContext,
   variation: VariationBundle
 ): string {
-  const lengthHint =
-    variation.lengthMode === "single"
-      ? "One casual sentence only."
-      : variation.lengthMode === "two_liner"
-        ? "Two short disjointed lines max."
-        : `About ${variation.targetWords} words, uneven.`;
   const v = variation.voice;
   return `Write a short Google review for ${business.name} in spoken Indian English. Contractions, imperfect ok. Not marketing.
 ${business.category ? `Business type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Mention: ${variation.highlightTheme}` : ""}
 
-${lengthHint} First person. No "I'll be back" / visit-again closer.
+${lengthHintForLite(variation)} First person. No "I'll be back" / visit-again closer.
 VOICE (must be obvious): ${v.label}
 Do: ${v.dos[0]}
 Don't: ${v.donts[0]}
@@ -429,12 +421,6 @@ function buildLiteReviewPrompt(
   qas: QA[],
   variation: VariationBundle
 ): string {
-  const lengthHint =
-    variation.lengthMode === "single"
-      ? "One casual sentence only — no wrap-up."
-      : variation.lengthMode === "two_liner"
-        ? "Two short disjointed lines — not a polished paragraph."
-        : `About ${variation.targetWords} words, uneven.`;
   const returnHint = answersAllowReturnMention(qas)
     ? "Customer mentioned returning — you may briefly echo that."
     : 'Do NOT say you\'ll be back / visit again.';
@@ -447,7 +433,7 @@ ${business.category ? `Type: ${business.category}` : ""}
 Answers:
 ${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
 
-${lengthHint} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
+${lengthHintForLite(variation)} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
 VOICE (must be obvious): ${v.label}
 Do: ${v.dos[0]}
 Don't: ${v.donts[0]}
@@ -478,6 +464,7 @@ ${formatWriteRules([
   "Do not invent specific menu items, staff names, or details beyond the context above",
   "Never use opening + praise + I'll-be-back formula",
   "Spoken Indian English — not American review-speak",
+  "Obey the HARD RULE — LENGTH block exactly (word count + sentence/line shape)",
 ])}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
@@ -514,11 +501,12 @@ ${formatWriteRules([
   allowReturn
     ? "Customer answers mention returning — a brief natural echo is ok, not a corporate closer"
     : "Do not add any return / visit-again signoff",
+  "Obey the HARD RULE — LENGTH block exactly (word count + sentence/line shape)",
   variation.lengthMode === "single"
     ? "Write exactly one casual sentence — no wrap-up"
     : variation.lengthMode === "two_liner"
       ? "Write two short uneven lines — ok if they feel a bit disconnected"
-      : "Keep shape uneven — never opening + service note + closing",
+      : "Keep shape uneven — never opening + service note + closing; stay in the word band",
 ])}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
@@ -586,7 +574,8 @@ async function generateOnce(
 }
 
 /**
- * Gemini kiosk-style review draft with random variation and anti-repetition retry.
+ * Gemini kiosk-style review draft with random variation and optional anti-repetition retry.
+ * Length is enforced only via the first prompt (no length re-rolls — keeps latency down).
  */
 export async function draftReviewWithGemini(
   business: BusinessContext,
@@ -654,6 +643,7 @@ ${formatWriteRules([
   "Stay true to the category and description — do not invent menu items or staff names",
   "Never use opening + praise + I'll-be-back formula",
   "Spoken Indian English — not American review-speak",
+  "Obey the HARD RULE — LENGTH block exactly (word count + sentence/line shape)",
 ])}
 
 Respond ONLY with JSON:
@@ -663,10 +653,11 @@ Respond ONLY with JSON:
 ${business.category ? `Type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Angle: ${variation.highlightTheme}` : ""}
 ${tone}
+${lengthHintForLite(variation)}
 VOICE (must be obvious): ${variation.voice.label}
 Do: ${variation.voice.dos[0]}
 Don't: ${variation.voice.donts[0]}
-Everyday speech with contractions. About 25 words. No visit-again closer.
+Everyday speech with contractions. No visit-again closer.
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
 
