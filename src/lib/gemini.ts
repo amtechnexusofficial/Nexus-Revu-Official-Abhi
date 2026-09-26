@@ -291,15 +291,24 @@ const WRITE_LIKE_RULES = `
 WRITE LIKE A REAL PERSON TYPING A QUICK NOTE (Indian English):
 - Everyday spoken Indian English — how people actually write Google reviews in India
 - Contractions where natural ("don't", "it's", "wasn't"); plain words like "quite good", "bit costly", "properly done", "staff was helpful" are fine
-- Light local flavour ok if it fits naturally (e.g. "only", "ya") — never force slang, Hinglish parody, or fake accent
+- Light local flavour ok if it fits naturally — one soft filler max ("only", "kinda", "a bit", "ya") — never stack slang, Hinglish parody, fake accent, or deliberate typos
 - Avoid Americanisms ("awesome", "y'all", "stoked", "the bomb", "super cute")
-- Imperfections are good: slightly messy wording, a fragment, trailing off
+- Imperfections are good: slightly messy wording, a fragment, trailing off, uneven punctuation
+- Occasional lowercase start or missing final period is fine — do not polish every sentence
+- Never use a neat 3-beat structure (setup + praise + closer)
 - No corporate politeness or polished customer-service tone
 - No em dashes or en dashes; no hyphenated compounds (write "well behaved" not "well-behaved")
-- No semicolons or colons; simple punctuation only
+- No semicolons or colons; simple punctuation only; avoid stacking exclamation marks
 - NEVER use a rigid formula (opening + service note + closing)
 - Do NOT invent menu items, staff names, or details not in the answers/context
 - No emojis or hashtags`;
+
+const ANSWER_GROUNDING_RULES = `
+HARD RULE — ANSWER GROUNDING:
+- Use 1 or 2 concrete details taken from the customer answers only
+- Prefer what they actually said (a product, wait, staff moment, price note) over abstract praise
+- Do NOT invent specifics that are not in the answers
+- No generic praise loops that could fit any business ("great service, great food, great vibe")`;
 
 const NO_RETURN_SIGN_OFF = `
 HARD RULE — NO RETURN / REVISIT SIGNOFFS:
@@ -433,7 +442,7 @@ ${business.category ? `Type: ${business.category}` : ""}
 Answers:
 ${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
 
-${lengthHintForLite(variation)} Lead with: "${variation.leadQa.answer}". Match tone to star ratings. No marketing clichés.
+${lengthHintForLite(variation)} Lead with: "${variation.leadQa.answer}". Use 1–2 concrete details from the answers only — no invented specifics, no generic praise loops. Match tone to star ratings. No marketing clichés.
 VOICE (must be obvious): ${v.label}
 Do: ${v.dos[0]}
 Don't: ${v.donts[0]}
@@ -494,6 +503,7 @@ ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
 ${allowReturn ? "" : NO_RETURN_SIGN_OFF}
 ${CONSTRUCTIVE_TONE_RULES}
+${ANSWER_GROUNDING_RULES}
 ${formatWriteRules([
   "Match tone honestly to star ratings in the answers",
   "Always stay true to the business category and description above — do not mention meals, dinner, or restaurant vibes unless that fits this business",

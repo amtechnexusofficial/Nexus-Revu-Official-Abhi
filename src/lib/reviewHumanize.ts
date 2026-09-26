@@ -1,10 +1,15 @@
 /**
  * Cleans model output so reviews read like a person typed them, not marketing copy.
+ * Light "mess" only — never parody typos or stacked slang.
  */
-/** ~1 in 3 reviews start lowercase for a casual note feel. */
+/** ~40% start lowercase for a casual note feel. */
 const CASUAL_LOWER_FIRST_CHANCE = 0.4;
-/** ~1 in 3 reviews drop the trailing period. */
+/** ~40% drop the trailing period. */
 const DROP_FINAL_PERIOD_CHANCE = 0.4;
+/** Soften AI-perfect commas. */
+const DROP_ONE_COMMA_CHANCE = 0.25;
+/** Soften enthusiastic ! that models overuse. */
+const SOFTEN_EXCLAIM_CHANCE = 0.35;
 
 /** Stripped post-generation if the model slips marketing / corporate language through. Longest first. */
 const MARKETING_PHRASES = [
@@ -111,6 +116,25 @@ function maybeDropFinalPeriod(text: string): string {
   return text.slice(0, -1);
 }
 
+/** Drop one mid-sentence comma so rhythm feels less polished. */
+function maybeDropOneComma(text: string): string {
+  if (Math.random() >= DROP_ONE_COMMA_CHANCE) return text;
+  const matches = [...text.matchAll(/, /g)];
+  if (matches.length === 0) return text;
+  const pick = matches[Math.floor(Math.random() * matches.length)];
+  if (pick.index == null) return text;
+  return text.slice(0, pick.index) + " " + text.slice(pick.index + 2);
+}
+
+function maybeSoftenExclaim(text: string): string {
+  if (Math.random() >= SOFTEN_EXCLAIM_CHANCE) return text;
+  if (!text.includes("!")) return text;
+  const last = text.lastIndexOf("!");
+  if (last < 0) return text;
+  const replacement = Math.random() < 0.5 ? "." : "";
+  return text.slice(0, last) + replacement + text.slice(last + 1);
+}
+
 export function humanizeReview(text: string): string {
   let s = text.trim();
 
@@ -126,8 +150,10 @@ export function humanizeReview(text: string): string {
   s = stripMarketingPhrases(s);
   s = normalizePunctuationSpacing(s);
 
+  s = maybeDropOneComma(s);
+  s = maybeSoftenExclaim(s);
   s = maybeLowercaseFirstWord(s);
   s = maybeDropFinalPeriod(s);
 
-  return s.trim();
+  return normalizePunctuationSpacing(s).trim();
 }

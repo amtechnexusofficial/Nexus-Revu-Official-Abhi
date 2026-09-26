@@ -15,6 +15,7 @@ import {
 import { formatAnswerForDisplay, type QuestionType } from "@/lib/questionTypes";
 import { isCustomerQrActive } from "@/lib/billing";
 import { errorDetail, formatErrorDetail, logAppError } from "@/lib/errorLog";
+import { checkDraftVelocity } from "@/lib/reviewVelocity";
 import { desc, eq } from "drizzle-orm";
 
 type Body = {
@@ -121,6 +122,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "This review link is currently unavailable." },
         { status: 403 }
+      );
+    }
+
+    const velocity = await checkDraftVelocity(business.id);
+    if (velocity.exceeded) {
+      return NextResponse.json(
+        { error: velocity.message ?? "Please try again later." },
+        { status: 429 }
       );
     }
 
