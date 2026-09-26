@@ -23,11 +23,12 @@ export const TARGET_LENGTHS = [32, 38, 44, 50] as const;
 export const SINGLE_SENTENCE_TARGET_LENGTHS = [10, 12, 14, 16] as const;
 export const TWO_LINER_TARGET_LENGTHS = [18, 22, 26, 30] as const;
 
-/** Messy / non-formula shapes — never opening + service + closing. */
+/** Messy / non-formula shapes — never opening + service + closing.
+ *  No example openers in the text — models copy those into every draft. */
 export const STRUCTURE_SEEDS = [
   "One casual sentence only — stop there, no wrap-up",
   "Two short lines that feel a bit disjointed, like a phone note",
-  "Start mid-thought ('went for…', 'tried the…') and trail off",
+  "Start mid-thought and trail off — no stock opener",
   "Just dump one specific detail — no intro, no closing",
   "Sound like a rough text to a friend — incomplete ok",
   "Lead with the answer, then a half-finished second beat",
