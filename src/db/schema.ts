@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   jsonb,
+  numeric,
 } from "drizzle-orm/pg-core";
 
 // The AM Technexus / agency login. One admin can manage many client businesses.
@@ -99,6 +100,30 @@ export const reviewBacklog = pgTable("review_backlog", {
     .references(() => businesses.id, { onDelete: "cascade" }),
   draftText: text("draft_text").notNull(),
   sentiment: text("sentiment").notNull(), // "positive" | "neutral" | "negative"
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// One row per Gemini API call (every attempt, including failed ones — they can still bill).
+export const geminiUsage = pgTable("gemini_usage", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").references(() => businesses.id, { onDelete: "set null" }),
+  // No FK: the usage row is written before the review session row exists.
+  sessionId: uuid("session_id"),
+  requestId: uuid("request_id"),
+  purpose: text("purpose").notNull(), // "live_draft" | "backlog"
+  model: text("model").notNull(),
+  thinkingLevel: text("thinking_level"),
+  promptTokens: integer("prompt_tokens"),
+  outputTokens: integer("output_tokens"),
+  thoughtTokens: integer("thought_tokens"),
+  cachedTokens: integer("cached_tokens"),
+  totalTokens: integer("total_tokens"),
+  // USD at the paid-tier price in effect when the call was made (see lib/geminiPricing.ts).
+  costUsd: numeric("cost_usd", { precision: 12, scale: 8 }),
+  latencyMs: integer("latency_ms"),
+  ok: boolean("ok").notNull(),
+  finishReason: text("finish_reason"),
+  error: text("error"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

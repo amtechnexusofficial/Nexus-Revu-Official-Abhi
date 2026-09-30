@@ -111,6 +111,38 @@ async function main() {
     ON app_errors (created_at DESC)
   `;
 
+  console.log("Creating gemini_usage table if missing…");
+  await sql`
+    CREATE TABLE IF NOT EXISTS gemini_usage (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      business_id uuid REFERENCES businesses(id) ON DELETE SET NULL,
+      session_id uuid,
+      request_id uuid,
+      purpose text NOT NULL,
+      model text NOT NULL,
+      thinking_level text,
+      prompt_tokens integer,
+      output_tokens integer,
+      thought_tokens integer,
+      cached_tokens integer,
+      total_tokens integer,
+      cost_usd numeric(12, 8),
+      latency_ms integer,
+      ok boolean NOT NULL,
+      finish_reason text,
+      error text,
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS gemini_usage_created_at_idx
+    ON gemini_usage (created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS gemini_usage_business_created_idx
+    ON gemini_usage (business_id, created_at DESC)
+  `;
+
   console.log("Done.");
 }
 

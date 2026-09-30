@@ -151,7 +151,7 @@ async function generateOneBacklog(
       description: business.description,
       reviewThemes: business.reviewThemes,
     };
-    const result = await draftBacklogReviewWithGemini(ctx, sentiment, recentDrafts);
+    const result = await draftBacklogReviewWithGemini(ctx, sentiment, recentDrafts, business.id);
     return result.draftText;
   }
   return templateBacklogDraft(business.name, sentiment, business.category);

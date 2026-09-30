@@ -52,7 +52,8 @@ async function buildDraft(
     slug: string;
   },
   formatted: { question: string; answer: string }[],
-  recentDrafts: string[]
+  recentDrafts: string[],
+  sessionId: string
 ): Promise<{ draftText: string; sentiment: string; source: "gemini" | "backlog" | "template" }> {
   if (isGeminiConfigured()) {
     try {
@@ -66,7 +67,7 @@ async function buildDraft(
           },
           formatted,
           recentDrafts,
-          { antiRepeatRetry: false }
+          { antiRepeatRetry: false, businessId: business.id, sessionId }
         ),
         LIVE_GEMINI_BUDGET_MS,
         "Gemini live draft budget exceeded"
@@ -154,7 +155,15 @@ export async function POST(req: NextRequest) {
       .map((r) => r.draftText)
       .filter((t): t is string => Boolean(t?.trim()));
 
-    let { draftText, sentiment, source } = await buildDraft(business, formatted, recentDrafts);
+    // Generated up front so Gemini usage rows can reference the session before it is inserted.
+    const sessionId = crypto.randomUUID();
+
+    let { draftText, sentiment, source } = await buildDraft(
+      business,
+      formatted,
+      recentDrafts,
+      sessionId
+    );
 
     if (!draftText?.trim()) {
       const fallback = draftReview(business.name, formatted, {
@@ -179,6 +188,7 @@ export async function POST(req: NextRequest) {
     const [session] = await db
       .insert(reviewSessions)
       .values({
+        id: sessionId,
         businessId: business.id,
         questionIds: answers.map((a) => a.questionId),
         answers: sessionAnswers,

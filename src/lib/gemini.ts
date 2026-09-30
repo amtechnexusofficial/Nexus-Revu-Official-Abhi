@@ -1,4 +1,6 @@
 import { humanizeReview } from "@/lib/reviewHumanize";
+import { recordGeminiUsage, type GeminiUsageContext } from "@/lib/geminiUsage";
+import type { GeminiUsageMetadata } from "@/lib/geminiPricing";
 import {
   draftTooSimilar,
   recentOpenings,
@@ -85,6 +87,8 @@ type GenerateOptions = {
   json?: boolean;
   maxOutputTokens?: number;
   temperature?: number;
+  /** When set, the call's tokens/cost are written to gemini_usage. */
+  usage?: GeminiUsageContext;
 };
 
 async function generateGeminiTextForModel(
@@ -102,49 +106,79 @@ async function generateGeminiTextForModel(
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const generationConfig = buildGenerationConfig(model, options);
+  const thinkingLevel =
+    (generationConfig.thinkingConfig as { thinkingLevel?: string } | undefined)?.thinkingLevel ??
+    null;
 
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig,
-    }),
-  });
+  const startedAt = Date.now();
+  let usage: GeminiUsageMetadata | undefined;
+  let finishReason: string | undefined;
+  let ok = false;
+  let errorMessage: string | undefined;
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    throw new Error(
-      `Gemini API error (${model}): ${res.status}${errBody ? ` — ${errBody.slice(0, 200)}` : ""}`
-    );
-  }
-
-  // Read as text first so truncated/corrupt bodies become a clear throw
-  // (fallback models / backlog can recover) instead of a vague JSON parse error.
-  const raw = await res.text();
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(
-      `Gemini returned invalid JSON (${model}, ${raw.length} bytes)`
-    );
-  }
-  const data = parsed as {
-    candidates?: Array<{
-      content?: { parts?: { text?: string; thought?: boolean }[] };
-      finishReason?: string;
-    }>;
-  };
-  const text = extractAnswerText(data);
+    const res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig,
+      }),
+    });
 
-  if (!text) {
-    const finishReason = data.candidates?.[0]?.finishReason;
-    throw new Error(
-      `Gemini returned an empty response (${model})${finishReason ? ` (finishReason: ${finishReason})` : ""}`
-    );
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(
+        `Gemini API error (${model}): ${res.status}${errBody ? ` — ${errBody.slice(0, 200)}` : ""}`
+      );
+    }
+
+    // Read as text first so truncated/corrupt bodies become a clear throw
+    // (fallback models / backlog can recover) instead of a vague JSON parse error.
+    const raw = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Gemini returned invalid JSON (${model}, ${raw.length} bytes)`
+      );
+    }
+    const data = parsed as {
+      candidates?: Array<{
+        content?: { parts?: { text?: string; thought?: boolean }[] };
+        finishReason?: string;
+      }>;
+      usageMetadata?: GeminiUsageMetadata;
+    };
+    usage = data.usageMetadata;
+    finishReason = data.candidates?.[0]?.finishReason;
+    const text = extractAnswerText(data);
+
+    if (!text) {
+      throw new Error(
+        `Gemini returned an empty response (${model})${finishReason ? ` (finishReason: ${finishReason})` : ""}`
+      );
+    }
+    ok = true;
+    return text;
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : String(err);
+    throw err;
+  } finally {
+    if (options?.usage) {
+      recordGeminiUsage({
+        ...options.usage,
+        model,
+        thinkingLevel,
+        usage,
+        finishReason,
+        ok,
+        error: errorMessage,
+        latencyMs: Date.now() - startedAt,
+      });
+    }
   }
-  return text;
 }
 
 /**
@@ -544,7 +578,8 @@ async function generateOnce(
   business: BusinessContext,
   qas: QA[],
   variation: VariationBundle,
-  recentDrafts: string[]
+  recentDrafts: string[],
+  usage: GeminiUsageContext
 ): Promise<GeminiDraftResult> {
   const hasAnswers = qas.some((qa) => qa.answer.trim());
   const fullPrompt = hasAnswers
@@ -569,6 +604,7 @@ async function generateOnce(
       const text = await generateGeminiTextForModel(prompt, model, {
         json: true,
         temperature: 1,
+        usage,
       });
       return parseDraftJson(text);
     } catch (err) {
@@ -591,16 +627,26 @@ export async function draftReviewWithGemini(
   business: BusinessContext,
   qas: QA[],
   recentDrafts: string[] = [],
-  options?: { antiRepeatRetry?: boolean }
+  options?: {
+    antiRepeatRetry?: boolean;
+    businessId?: string | null;
+    sessionId?: string | null;
+  }
 ): Promise<GeminiDraftResult> {
   const hasAnswers = qas.some((qa) => qa.answer.trim());
   const themes = (business.reviewThemes ?? []).filter((t) => t.trim());
+  const usage: GeminiUsageContext = {
+    purpose: "live_draft",
+    businessId: options?.businessId,
+    sessionId: options?.sessionId,
+    requestId: crypto.randomUUID(),
+  };
 
   const variation = hasAnswers
     ? pickVariation(qas)
     : pickNoAnswerVariation(themes);
 
-  let result = await generateOnce(business, qas, variation, recentDrafts);
+  let result = await generateOnce(business, qas, variation, recentDrafts, usage);
 
   // Live customer drafts skip the similarity re-roll — a second Gemini pass
   // often pushes Cloudflare Workers past the request time limit (HTTP 503).
@@ -612,7 +658,7 @@ export async function draftReviewWithGemini(
     const retryVariation = hasAnswers
       ? pickVariationRetry(qas, variation)
       : pickNoAnswerVariationRetry(themes, variation);
-    result = await generateOnce(business, qas, retryVariation, recentDrafts);
+    result = await generateOnce(business, qas, retryVariation, recentDrafts, usage);
   }
 
   return result;
@@ -624,8 +670,14 @@ export async function draftReviewWithGemini(
 export async function draftBacklogReviewWithGemini(
   business: BusinessContext,
   sentiment: "positive" | "neutral" | "negative",
-  recentDrafts: string[] = []
+  recentDrafts: string[] = [],
+  businessId?: string | null
 ): Promise<GeminiDraftResult> {
+  const usage: GeminiUsageContext = {
+    purpose: "backlog",
+    businessId,
+    requestId: crypto.randomUUID(),
+  };
   const themes = (business.reviewThemes ?? []).filter((t) => t.trim());
   const variation = pickNoAnswerVariation(themes);
   const tone =
@@ -686,6 +738,7 @@ Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
       const text = await generateGeminiTextForModel(prompt, model, {
         json: true,
         temperature: 1,
+        usage,
       });
       const parsed = parseDraftJson(text);
       return { draftText: parsed.draftText, sentiment };
