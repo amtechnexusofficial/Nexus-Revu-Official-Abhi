@@ -12,15 +12,15 @@ function envInt(name: string, fallback: number): number {
 
 export function draftVelocityLimits() {
   return {
-    perHour: envInt("REVIEW_MAX_DRAFTS_PER_HOUR", 10),
-    perDay: envInt("REVIEW_MAX_DRAFTS_PER_DAY", 35),
+    perHour: envInt("REVIEW_MAX_DRAFTS_PER_HOUR", 40),
+    perDay: envInt("REVIEW_MAX_DRAFTS_PER_DAY", 150),
   };
 }
 
 export function postVelocityLimits() {
   return {
-    perHour: envInt("REVIEW_MAX_POSTS_PER_HOUR", 8),
-    perDay: envInt("REVIEW_MAX_POSTS_PER_DAY", 25),
+    perHour: envInt("REVIEW_MAX_POSTS_PER_HOUR", 40),
+    perDay: envInt("REVIEW_MAX_POSTS_PER_DAY", 150),
   };
 }
 
