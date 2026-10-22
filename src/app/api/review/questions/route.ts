@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { businesses, questions } from "@/db/schema";
 import { pickQuestionCount, pickRandomQuestions } from "@/lib/reviewDraft";
 import { isCustomerQrActive } from "@/lib/billing";
 import { errorDetail, formatErrorDetail, logAppError } from "@/lib/errorLog";
-import { eq, and } from "drizzle-orm";
+import { loadBusinessQuestionPool } from "@/lib/reviewQuestions";
 
 export const dynamic = "force-dynamic";
 
@@ -17,22 +15,18 @@ function json(data: unknown, status = 200) {
   });
 }
 
+
 export async function GET(req: NextRequest) {
   const slug = req.nextUrl.searchParams.get("slug");
   try {
     if (!slug) return json({ error: "slug required" }, 400);
 
-    const [business] = await db.select().from(businesses).where(eq(businesses.slug, slug));
-    if (!business) return json({ error: "Business not found" }, 404);
+    const result = await loadBusinessQuestionPool(slug);
+    if (!result) return json({ error: "Business not found" }, 404);
+    const { business, pool } = result;
     if (!isCustomerQrActive(business)) {
       return json({ error: "This review link is currently unavailable." }, 403);
     }
-
-    const pool = await db
-      .select()
-      .from(questions)
-      .where(and(eq(questions.businessId, business.id), eq(questions.active, true)));
-
     if (pool.length === 0) {
       return json({ error: "This business hasn't set up any questions yet" }, 404);
     }

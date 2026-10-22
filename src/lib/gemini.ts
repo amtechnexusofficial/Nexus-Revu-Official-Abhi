@@ -3,6 +3,7 @@ import { recordGeminiUsage, type GeminiUsageContext } from "@/lib/geminiUsage";
 import type { GeminiUsageMetadata } from "@/lib/geminiPricing";
 import {
   draftTooSimilar,
+  overusedPhrases,
   recentOpenings,
   truncateDraft,
 } from "@/lib/reviewSimilarity";
@@ -14,6 +15,7 @@ import {
   answersAllowReturnMention,
   formatVoiceHardRules,
   formatLengthHardRule,
+  formatIndianEnglishRules,
   LENGTH_BANDS,
   type QA,
   type VariationBundle,
@@ -24,13 +26,18 @@ export type GeminiDraftResult = {
   sentiment: "positive" | "neutral" | "negative";
 };
 
-const DEFAULT_MODEL = "gemini-3.6-flash";
-const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+const FALLBACK_MODEL = "gemini-3.6-flash";
 /** Per-model wall clock — keep short so live drafts can fall back before CF 503s. */
 const GEMINI_TIMEOUT_MS = 8000;
-/** Enough for anti-repetition without bloating the prompt. */
-const MAX_RECENT_IN_PROMPT = 5;
+/** Openings and repeated phrases are drawn from this many recent drafts. */
+const MAX_RECENT_IN_PROMPT = 20;
+/** Full (truncated) text is shown only for the newest few, to keep the prompt small. */
+const MAX_FULL_RECENTS_IN_PROMPT = 6;
 const PATTERN_TRUNCATE = 200;
+/** A similarity re-roll is only attempted if at least this much of the live budget remains. */
+const MIN_RETRY_WINDOW_MS = 4000;
+const RETRY_SAFETY_MARGIN_MS = 1000;
 
 function outputTokenLimit(model: string, requested?: number): number {
   if (requested) return requested;
@@ -87,6 +94,7 @@ type GenerateOptions = {
   json?: boolean;
   maxOutputTokens?: number;
   temperature?: number;
+  timeoutMs?: number;
   /** When set, the call's tokens/cost are written to gemini_usage. */
   usage?: GeminiUsageContext;
 };
@@ -124,7 +132,7 @@ async function generateGeminiTextForModel(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig,
       }),
-    });
+    }, options?.timeoutMs);
 
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
@@ -272,11 +280,6 @@ const BANNED_OPENERS = [
 
 const BANNED_PHRASES = [
   "hidden gem",
-  "highly recommend",
-  "highly recommended",
-  "must try",
-  "must visit",
-  "must-try",
   "absolutely loved",
   "amazing experience",
   "exceptional service",
@@ -322,13 +325,10 @@ ${BANNED_PHRASES.map((p) => `- "${p}"`).join("\n")}
 Prefer one plain specific detail from the answers over praise clichés.`;
 
 const WRITE_LIKE_RULES = `
-WRITE LIKE A REAL PERSON TYPING A QUICK NOTE (Indian English):
-- Everyday spoken Indian English — how people actually write Google reviews in India
-- Contractions where natural ("don't", "it's", "wasn't"); plain words like "quite good", "bit costly", "properly done", "staff was helpful" are fine
-- Light local flavour ok if it fits naturally — one soft filler max ("only", "kinda", "a bit", "ya") — never stack slang, Hinglish parody, fake accent, or deliberate typos
-- Avoid Americanisms ("awesome", "y'all", "stoked", "the bomb", "super cute")
+WRITE LIKE A REAL PERSON TYPING A GOOGLE REVIEW:
+- Follow the HARD RULE — INDIAN ENGLISH block above
 - Imperfections are good: slightly messy wording, a fragment, trailing off, uneven punctuation
-- Occasional lowercase start or missing final period is fine — do not polish every sentence
+- Use normal capitalisation (capital letter at the start of every sentence); a missing final period is fine
 - Never use a neat 3-beat structure (setup + praise + closer)
 - No corporate politeness or polished customer-service tone
 - No em dashes or en dashes; no hyphenated compounds (write "well behaved" not "well-behaved")
@@ -339,10 +339,19 @@ WRITE LIKE A REAL PERSON TYPING A QUICK NOTE (Indian English):
 
 const ANSWER_GROUNDING_RULES = `
 HARD RULE — ANSWER GROUNDING:
-- Use 1 or 2 concrete details taken from the customer answers only
+- Build the review from concrete details in the customer answers (one-sentence drafts may use one; longer drafts should cover two or three)
 - Prefer what they actually said (a product, wait, staff moment, price note) over abstract praise
 - Do NOT invent specifics that are not in the answers
+- Do NOT bring up topics the answers never mention (washroom, cleanliness, parking, price, wait time, staff). To reach the length, go deeper on what they did say (what stood out, how it tasted or felt), not wider
+- If every answer is positive, the review must contain zero complaints, criticism or suggestions for improvement
 - No generic praise loops that could fit any business ("great service, great food, great vibe")`;
+
+const NO_VISIT_CONTEXT_RULES = `
+HARD RULE — NO INVENTED VISIT CONTEXT:
+- Do NOT say when the visit happened: no meal names (breakfast, lunch, dinner, brunch), no time of day (morning, evening, night), no day or weekend, no "last night" / "yesterday"
+- Do NOT say who the reviewer was with: no family, friends, wife, husband, kids, partner, colleagues, no "date" or "date night"
+- Do NOT invent an occasion (birthday, anniversary, celebration, party)
+- Only mention any of these if the customer's own answers clearly state it`;
 
 const NO_RETURN_SIGN_OFF = `
 HARD RULE — NO RETURN / REVISIT SIGNOFFS:
@@ -355,8 +364,11 @@ WHEN FEEDBACK IS MIXED OR NEGATIVE (low stars, complaints, disappointment):
 - Calm and plain, not angry or dramatic — still everyday speech, not corporate soft-speak
 - Prefer plain specifics ("wait was long", "food was cold") over insults ("terrible", "worst", "awful", "never again")
 - No profanity, all-caps ranting, or attacks on staff by name
-- Keep it short — state what went wrong without stacking complaints
+- State what went wrong plainly without stacking complaints
 - Sentiment label must still match reality (negative stays negative when the visit went poorly)`;
+
+const INDIAN_ENGLISH_REMINDER =
+  "FINAL CHECK: does it read like an Indian customer wrote it (Indian English, British spelling, the touches above)? If it sounds American, rewrite it.";
 
 function formatBannedLanguageRules(): string {
   return BANNED_LANGUAGE_RULES;
@@ -395,14 +407,27 @@ Background (accuracy only, do NOT recite the full list): ${description}`;
 function formatVariationBlock(variation: VariationBundle, noAnswers: boolean): string {
   const lines = [
     formatLengthHardRule(variation.lengthMode, variation.targetWords),
-    variation.lengthMode === "short" ? `- Shape: ${variation.structureSeed}` : "",
+    variation.lengthMode === "medium" ||
+    variation.lengthMode === "long" ||
+    variation.lengthMode === "two_paragraph"
+      ? `- Shape: ${variation.structureSeed}`
+      : "",
     "",
     formatVoiceHardRules(variation.voice),
   ].filter(Boolean);
-  if (!noAnswers) {
+  if (noAnswers) {
+    lines.push(`- Opening: ${variation.openingStyle}`);
+  } else {
     lines.push(
-      `- Lead with this answer as your opening focus: Q: ${variation.leadQa.question} / A: ${variation.leadQa.answer}`
+      `- Opening: ${variation.openingStyle}, about this answer: Q: ${variation.leadQa.question} / A: ${variation.leadQa.answer}`
     );
+    if (variation.featuredQas && variation.featuredQas.length > 0) {
+      lines.push(
+        `- Centre this draft on these answers: ${variation.featuredQas
+          .map((qa) => `${qa.question} → ${qa.answer}`)
+          .join("; ")}. Mention the others briefly or skip them, but never drop a complaint or low rating`
+      );
+    }
   }
   if (variation.contentFocusSeed) {
     lines.push(`- Content angle: ${variation.contentFocusSeed}`);
@@ -421,17 +446,35 @@ function lengthHintForLite(variation: VariationBundle): string {
   if (variation.lengthMode === "two_liner") {
     return `HARD: exactly two short lines/sentences, ${band.minWords}-${band.maxWords} words total (aim ~${variation.targetWords}).`;
   }
-  return `HARD: ${band.minWords}-${band.maxWords} words, uneven multi-beat (aim ~${variation.targetWords}). Not one tiny sentence.`;
+  if (variation.lengthMode === "two_paragraph") {
+    return `HARD: exactly two paragraphs separated by one blank line, ${band.minSentences}-${band.maxSentences} sentences and ${band.minWords}-${band.maxWords} words total (aim ~${variation.targetWords}).`;
+  }
+  return `HARD: ${band.minSentences} to ${band.maxSentences} sentences, ${band.minWords}-${band.maxWords} words total (aim ~${variation.targetWords}). Each sentence adds a different detail.`;
+}
+
+function liteStyleHint(variation: VariationBundle): string {
+  return `Indian English, British spelling, no American slang. Work in: ${variation.indianTouches
+    .slice(0, 2)
+    .join("; ")}.
+Do not mention meals, time of day, or who you were with unless the answers say so.`;
 }
 
 function formatRepetitionGuards(recentDrafts: string[]): string {
   const limited = limitRecents(recentDrafts);
   const openings = recentOpenings(limited);
-  const truncatedRecents = limited.map((d) => truncateDraft(d, PATTERN_TRUNCATE));
+  const phrases = overusedPhrases(limited);
+  const truncatedRecents = limited
+    .slice(0, MAX_FULL_RECENTS_IN_PROMPT)
+    .map((d) => truncateDraft(d, PATTERN_TRUNCATE));
 
   const openingBan =
     openings.length > 0
-      ? `\nHARD RULE — do NOT reuse or closely mimic these recent opening lines:\n${openings.map((o) => `- "${o}"`).join("\n")}`
+      ? `\nHARD RULE — do NOT reuse or closely mimic these recent opening lines (start differently from all of them):\n${openings.map((o) => `- "${o}"`).join("\n")}`
+      : "";
+
+  const phraseBan =
+    phrases.length > 0
+      ? `\nHARD RULE — these phrases are overused in recent reviews here, do NOT use them:\n${phrases.map((p) => `- "${p}"`).join("\n")}`
       : "";
 
   const patternBan =
@@ -439,7 +482,7 @@ function formatRepetitionGuards(recentDrafts: string[]): string {
       ? `\nRecent reviews at this business (do not reuse sentence patterns or distinctive phrases from these):\n${truncatedRecents.map((d, i) => `${i + 1}. "${d}"`).join("\n")}`
       : "";
 
-  return `${openingBan}${patternBan}`;
+  return `${openingBan}${phraseBan}${patternBan}`;
 }
 
 function buildLiteNoAnswersPrompt(
@@ -447,7 +490,7 @@ function buildLiteNoAnswersPrompt(
   variation: VariationBundle
 ): string {
   const v = variation.voice;
-  return `Write a short Google review for ${business.name} in spoken Indian English. Contractions, imperfect ok. Not marketing.
+  return `Write a Google review for ${business.name} in spoken Indian English. Contractions, imperfect ok. Not marketing.
 ${business.category ? `Business type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Mention: ${variation.highlightTheme}` : ""}
 
@@ -455,6 +498,7 @@ ${lengthHintForLite(variation)} First person. No "I'll be back" / visit-again cl
 VOICE (must be obvious): ${v.label}
 Do: ${v.dos[0]}
 Don't: ${v.donts[0]}
+${liteStyleHint(variation)}
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"positive|neutral|negative"}`;
 }
@@ -468,18 +512,19 @@ function buildLiteReviewPrompt(
     ? "Customer mentioned returning — you may briefly echo that."
     : 'Do NOT say you\'ll be back / visit again.';
   const v = variation.voice;
-  return `Write a short Google review from these customer answers in spoken Indian English. Everyday speech, contractions, imperfect ok — not an essay.
+  return `Write a Google review from these customer answers in spoken Indian English. Everyday speech, contractions, imperfect ok — not an essay.
 
 Business: ${business.name}
 ${business.category ? `Type: ${business.category}` : ""}
 
 Answers:
-${qas.map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
+${(variation.answerOrder ?? qas).map((qa, i) => `${i + 1}. ${qa.question} → ${qa.answer}`).join("\n")}
 
-${lengthHintForLite(variation)} Lead with: "${variation.leadQa.answer}". Use 1–2 concrete details from the answers only — no invented specifics, no generic praise loops. Match tone to star ratings. No marketing clichés.
+${lengthHintForLite(variation)} ${variation.openingStyle}, about: "${variation.leadQa.answer}". Use concrete details from the answers only — no invented specifics, no topics the answers never mention (washroom, cleanliness, parking, price, wait), no generic praise loops. If every answer is positive, no complaints or improvement suggestions at all. Match tone to star ratings. No marketing clichés.
 VOICE (must be obvious): ${v.label}
 Do: ${v.dos[0]}
 Don't: ${v.donts[0]}
+${liteStyleHint(variation)}
 ${returnHint}
 If feedback is negative or mixed: stay truthful but calm — plain specifics, no insults. Do not rewrite a bad visit as praise.
 
@@ -491,7 +536,9 @@ function buildNoAnswersPrompt(
   variation: VariationBundle,
   recentDrafts: string[]
 ): string {
-  return `You are drafting a Google review for this business. The customer did not answer any questions — write a short, genuine positive note grounded in the business context below.
+  return `You are drafting a Google review for this business, written by an Indian customer. The customer did not answer any questions — write a genuine positive review grounded in the business context below.
+
+${formatIndianEnglishRules(variation.indianTouches, variation.lengthMode)}
 
 ${formatBusinessContext(business, variation.highlightTheme)}
 
@@ -500,15 +547,17 @@ ${formatVariationBlock(variation, true)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${NO_VISIT_CONTEXT_RULES}
 ${NO_RETURN_SIGN_OFF}
 ${formatWriteRules([
   "Keep it positive and believable without corporate politeness",
-  "Stay true to the category and description — do not mention meals, dinner, or restaurant vibes unless that fits this business",
+  "Stay true to the category and description — do not mention restaurant vibes unless that fits this business",
   "Do not invent specific menu items, staff names, or details beyond the context above",
   "Never use opening + praise + I'll-be-back formula",
-  "Spoken Indian English — not American review-speak",
   "Obey the HARD RULE — LENGTH block exactly (word count + sentence/line shape)",
 ])}
+
+${INDIAN_ENGLISH_REMINDER}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
 
@@ -523,25 +572,27 @@ function buildReviewPrompt(
   recentDrafts: string[]
 ): string {
   const allowReturn = answersAllowReturnMention(qas);
-  return `You are drafting a Google review for this business from a real customer's quick answers.
+  return `You are drafting a Google review for this business from a real Indian customer's quick answers.
+
+${formatIndianEnglishRules(variation.indianTouches, variation.lengthMode)}
 
 ${formatBusinessContext(business)}
 
 CUSTOMER ANSWERS:
-${qas.map((qa, i) => `${i + 1}. Q: ${qa.question}\n   A: ${qa.answer}`).join("\n")}
+${(variation.answerOrder ?? qas).map((qa, i) => `${i + 1}. Q: ${qa.question}\n   A: ${qa.answer}`).join("\n")}
 
 VARIATION FOR THIS DRAFT (follow these — customer did not choose them):
 ${formatVariationBlock(variation, false)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${NO_VISIT_CONTEXT_RULES}
 ${allowReturn ? "" : NO_RETURN_SIGN_OFF}
 ${CONSTRUCTIVE_TONE_RULES}
 ${ANSWER_GROUNDING_RULES}
 ${formatWriteRules([
   "Match tone honestly to star ratings in the answers",
-  "Always stay true to the business category and description above — do not mention meals, dinner, or restaurant vibes unless that fits this business",
-  "Spoken Indian English — not American review-speak",
+  "Always stay true to the business category and description above — do not mention restaurant vibes unless that fits this business",
   allowReturn
     ? "Customer answers mention returning — a brief natural echo is ok, not a corporate closer"
     : "Do not add any return / visit-again signoff",
@@ -550,8 +601,14 @@ ${formatWriteRules([
     ? "Write exactly one casual sentence — no wrap-up"
     : variation.lengthMode === "two_liner"
       ? "Write two short uneven lines — ok if they feel a bit disconnected"
-      : "Keep shape uneven — never opening + service note + closing; stay in the word band",
+      : variation.lengthMode === "long"
+        ? "Write a fuller review with several concrete details — casual and natural, not an essay"
+        : variation.lengthMode === "two_paragraph"
+          ? "Write two naturally separated paragraphs with several concrete details — fuller, but not an essay"
+          : "Write 3 to 5 sentences, each adding a different detail — uneven shape, never opening + service note + closing",
 ])}
+
+${INDIAN_ENGLISH_REMINDER}
 
 Then classify overall sentiment as exactly one word: positive, neutral, or negative.
 
@@ -559,18 +616,25 @@ Respond ONLY with JSON in this exact shape, no markdown fences, no preamble:
 {"draftText": "...", "sentiment": "positive"}`;
 }
 
-function parseDraftJson(text: string): GeminiDraftResult {
+function parseDraftJson(text: string, qas: QA[] = []): GeminiDraftResult {
   const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
+  const answersText = qas.map((qa) => `${qa.question} ${qa.answer}`).join(" ");
+  const answers = qas.map((qa) => qa.answer);
   try {
     const parsed = JSON.parse(cleaned);
     const sentiment = parsed.sentiment as GeminiDraftResult["sentiment"];
-    const draftText = humanizeReview(String(parsed.draftText ?? ""));
+    const draftText = humanizeReview(
+      String(parsed.draftText ?? ""),
+      answersText,
+      sentiment,
+      answers
+    );
     if (!["positive", "neutral", "negative"].includes(sentiment)) {
       return { draftText, sentiment: "neutral" };
     }
     return { draftText, sentiment };
   } catch {
-    return { draftText: humanizeReview(cleaned), sentiment: "neutral" };
+    return { draftText: humanizeReview(cleaned, answersText), sentiment: "neutral" };
   }
 }
 
@@ -579,7 +643,8 @@ async function generateOnce(
   qas: QA[],
   variation: VariationBundle,
   recentDrafts: string[],
-  usage: GeminiUsageContext
+  usage: GeminiUsageContext,
+  timeoutMs?: number
 ): Promise<GeminiDraftResult> {
   const hasAnswers = qas.some((qa) => qa.answer.trim());
   const fullPrompt = hasAnswers
@@ -594,7 +659,8 @@ async function generateOnce(
     { model: primaryModel, prompt: fullPrompt },
   ];
   if (primaryModel !== FALLBACK_MODEL) {
-    attempts.push({ model: FALLBACK_MODEL, prompt: litePrompt });
+    const fallbackPrompt = isGemini36Model(FALLBACK_MODEL) ? fullPrompt : litePrompt;
+    attempts.push({ model: FALLBACK_MODEL, prompt: fallbackPrompt });
   }
 
   let lastError: unknown;
@@ -604,9 +670,10 @@ async function generateOnce(
       const text = await generateGeminiTextForModel(prompt, model, {
         json: true,
         temperature: 1,
+        timeoutMs,
         usage,
       });
-      return parseDraftJson(text);
+      return parseDraftJson(text, qas);
     } catch (err) {
       lastError = err;
       const next = attempts[i + 1];
@@ -629,10 +696,13 @@ export async function draftReviewWithGemini(
   recentDrafts: string[] = [],
   options?: {
     antiRepeatRetry?: boolean;
+    /** Total wall clock the caller allows; the similarity re-roll only runs if it fits inside. */
+    liveBudgetMs?: number;
     businessId?: string | null;
     sessionId?: string | null;
   }
 ): Promise<GeminiDraftResult> {
+  const startedAt = Date.now();
   const hasAnswers = qas.some((qa) => qa.answer.trim());
   const themes = (business.reviewThemes ?? []).filter((t) => t.trim());
   const usage: GeminiUsageContext = {
@@ -646,22 +716,42 @@ export async function draftReviewWithGemini(
     ? pickVariation(qas)
     : pickNoAnswerVariation(themes);
 
-  let result = await generateOnce(business, qas, variation, recentDrafts, usage);
+  const result = await generateOnce(business, qas, variation, recentDrafts, usage);
 
-  // Live customer drafts skip the similarity re-roll — a second Gemini pass
-  // often pushes Cloudflare Workers past the request time limit (HTTP 503).
   if (
-    options?.antiRepeatRetry !== false &&
-    recentDrafts.length > 0 &&
-    draftTooSimilar(result.draftText, recentDrafts)
+    options?.antiRepeatRetry === false ||
+    recentDrafts.length === 0 ||
+    !draftTooSimilar(result.draftText, recentDrafts)
   ) {
-    const retryVariation = hasAnswers
-      ? pickVariationRetry(qas, variation)
-      : pickNoAnswerVariationRetry(themes, variation);
-    result = await generateOnce(business, qas, retryVariation, recentDrafts, usage);
+    return result;
   }
 
-  return result;
+  // A second pass that overruns the live budget gets the request killed (HTTP 503),
+  // so the re-roll only runs when enough time is left and is capped to that time.
+  let retryTimeoutMs: number | undefined;
+  if (options?.liveBudgetMs) {
+    const remaining =
+      options.liveBudgetMs - (Date.now() - startedAt) - RETRY_SAFETY_MARGIN_MS;
+    if (remaining < MIN_RETRY_WINDOW_MS) return result;
+    retryTimeoutMs = Math.min(GEMINI_TIMEOUT_MS, remaining);
+  }
+
+  const retryVariation = hasAnswers
+    ? pickVariationRetry(qas, variation)
+    : pickNoAnswerVariationRetry(themes, variation);
+  try {
+    return await generateOnce(
+      business,
+      qas,
+      retryVariation,
+      recentDrafts,
+      usage,
+      retryTimeoutMs
+    );
+  } catch (err) {
+    console.warn("Similarity re-roll failed, keeping first draft:", err);
+    return result;
+  }
 }
 
 /**
@@ -682,14 +772,16 @@ export async function draftBacklogReviewWithGemini(
   const variation = pickNoAnswerVariation(themes);
   const tone =
     sentiment === "positive"
-      ? "Write a short positive review. Friendly, understated, everyday speech. No I'll-be-back closer."
+      ? "Write a positive review. Friendly, simple everyday speech. No I'll-be-back closer."
       : sentiment === "negative"
-        ? "Write a short constructive negative review. Calm and specific (e.g. wait was long), not insulting. Do not praise the visit."
-        : "Write a short mixed/neutral review. Okay but not great — something average about service, wait, or value.";
+        ? "Write a constructive negative review. Calm and specific (e.g. wait was long), not insulting. Do not praise the visit."
+        : "Write a mixed/neutral review. Okay but not great — something average about service, wait, or value.";
 
-  const fullPrompt = `You are drafting a Google review for this business to keep as a standby fallback.
+  const fullPrompt = `You are drafting a Google review for this business, written by an Indian customer, to keep as a standby fallback.
 Target sentiment for THIS draft: ${sentiment}
 ${tone}
+
+${formatIndianEnglishRules(variation.indianTouches, variation.lengthMode)}
 
 ${formatBusinessContext(business, variation.highlightTheme)}
 
@@ -698,20 +790,22 @@ ${formatVariationBlock(variation, true)}
 ${formatRepetitionGuards(recentDrafts)}
 ${SELECTIVE_CONTEXT_RULES}
 ${formatBannedLanguageRules()}
+${NO_VISIT_CONTEXT_RULES}
 ${NO_RETURN_SIGN_OFF}
 ${CONSTRUCTIVE_TONE_RULES}
 ${formatWriteRules([
   `Return sentiment exactly as "${sentiment}"`,
   "Stay true to the category and description — do not invent menu items or staff names",
   "Never use opening + praise + I'll-be-back formula",
-  "Spoken Indian English — not American review-speak",
   "Obey the HARD RULE — LENGTH block exactly (word count + sentence/line shape)",
 ])}
+
+${INDIAN_ENGLISH_REMINDER}
 
 Respond ONLY with JSON:
 {"draftText": "...", "sentiment": "${sentiment}"}`;
 
-  const litePrompt = `Write a short Google review for ${business.name} in spoken Indian English. Target sentiment: ${sentiment}.
+  const litePrompt = `Write a Google review for ${business.name} in spoken Indian English. Target sentiment: ${sentiment}.
 ${business.category ? `Type: ${business.category}` : ""}
 ${variation.highlightTheme ? `Angle: ${variation.highlightTheme}` : ""}
 ${tone}
@@ -719,7 +813,8 @@ ${lengthHintForLite(variation)}
 VOICE (must be obvious): ${variation.voice.label}
 Do: ${variation.voice.dos[0]}
 Don't: ${variation.voice.donts[0]}
-Everyday speech with contractions. No visit-again closer.
+${liteStyleHint(variation)}
+No visit-again closer.
 
 Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
 
@@ -728,7 +823,8 @@ Respond ONLY with JSON: {"draftText":"...","sentiment":"${sentiment}"}`;
     { model: primaryModel, prompt: fullPrompt },
   ];
   if (primaryModel !== FALLBACK_MODEL) {
-    attempts.push({ model: FALLBACK_MODEL, prompt: litePrompt });
+    const fallbackPrompt = isGemini36Model(FALLBACK_MODEL) ? fullPrompt : litePrompt;
+    attempts.push({ model: FALLBACK_MODEL, prompt: fallbackPrompt });
   }
 
   let lastError: unknown;
