@@ -616,25 +616,118 @@ Respond ONLY with JSON in this exact shape, no markdown fences, no preamble:
 {"draftText": "...", "sentiment": "positive"}`;
 }
 
+/** Escape literal control chars inside JSON strings — models often emit raw
+ *  newlines in draftText (multi-paragraph drafts), which JSON.parse rejects. */
+function escapeControlCharsInJsonStrings(input: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of input) {
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString && (ch === "\n" || ch === "\r" || ch === "\t")) {
+      out += ch === "\t" ? "\\t" : "\\n";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function unescapeJsonString(text: string): string {
+  return text.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (_, esc: string) => {
+    if (esc[0] === "u") return String.fromCodePoint(parseInt(esc.slice(1), 16));
+    const map: Record<string, string> = {
+      n: "\n",
+      t: "\t",
+      r: "\r",
+      b: "\b",
+      f: "\f",
+      '"': '"',
+      "\\": "\\",
+      "/": "/",
+    };
+    return map[esc] ?? esc;
+  });
+}
+
+/** Last-resort field extraction when the response isn't parseable JSON. */
+function extractDraftFields(
+  cleaned: string
+): { draftText: string; sentiment: GeminiDraftResult["sentiment"] } | null {
+  const draftMatch = cleaned.match(/"draftText"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+  if (!draftMatch) return null;
+  const draftText = unescapeJsonString(draftMatch[1]).trim();
+  const rawSentiment = cleaned
+    .match(/"sentiment"\s*:\s*"(\w+)"/i)?.[1]
+    ?.toLowerCase();
+  const sentiment =
+    rawSentiment === "positive" || rawSentiment === "negative"
+      ? rawSentiment
+      : "neutral";
+  return { draftText, sentiment };
+}
+
 function parseDraftJson(text: string, qas: QA[] = []): GeminiDraftResult {
-  const cleaned = text.replace(/^```json\s*|```$/g, "").trim();
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/g, "")
+    .trim();
   const answersText = qas.map((qa) => `${qa.question} ${qa.answer}`).join(" ");
   const answers = qas.map((qa) => qa.answer);
-  try {
-    const parsed = JSON.parse(cleaned);
-    const sentiment = parsed.sentiment as GeminiDraftResult["sentiment"];
+
+  const toResult = (
+    draftRaw: unknown,
+    sentimentRaw: unknown
+  ): GeminiDraftResult => {
+    const rawSentiment =
+      typeof sentimentRaw === "string" ? sentimentRaw.toLowerCase() : "";
+    const sentiment =
+      rawSentiment === "positive" || rawSentiment === "negative"
+        ? rawSentiment
+        : "neutral";
     const draftText = humanizeReview(
-      String(parsed.draftText ?? ""),
+      String(draftRaw ?? ""),
       answersText,
       sentiment,
       answers
     );
-    if (!["positive", "neutral", "negative"].includes(sentiment)) {
-      return { draftText, sentiment: "neutral" };
-    }
     return { draftText, sentiment };
+  };
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    return toResult(parsed.draftText, parsed.sentiment);
   } catch {
-    return { draftText: humanizeReview(cleaned, answersText), sentiment: "neutral" };
+    try {
+      const repaired = escapeControlCharsInJsonStrings(cleaned);
+      const parsed = JSON.parse(repaired);
+      return toResult(parsed.draftText, parsed.sentiment);
+    } catch {
+      const extracted = extractDraftFields(cleaned);
+      if (extracted) {
+        return toResult(extracted.draftText, extracted.sentiment);
+      }
+      // Not JSON-shaped at all — the model answered with plain text.
+      if (!cleaned.startsWith("{")) {
+        return { draftText: humanizeReview(cleaned, answersText), sentiment: "neutral" };
+      }
+      // A JSON blob we can't salvage — never show it to the customer.
+      return { draftText: "", sentiment: "neutral" };
+    }
   }
 }
 
