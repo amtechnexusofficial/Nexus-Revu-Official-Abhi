@@ -664,21 +664,48 @@ function unescapeJsonString(text: string): string {
   });
 }
 
-/** Last-resort field extraction when the response isn't parseable JSON. */
+/** Last-resort field extraction when the response isn't parseable JSON.
+ *  Also unwinds escaped-quote / regex-shaped blobs like
+ *  R"^{\s*\"draftText\":\s*\"...\",\"sentiment\":...}" that lite models emit. */
 function extractDraftFields(
   cleaned: string
 ): { draftText: string; sentiment: GeminiDraftResult["sentiment"] } | null {
-  const draftMatch = cleaned.match(/"draftText"\s*:\s*"([\s\S]*?)"\s*[,}]/);
-  if (!draftMatch) return null;
-  const draftText = unescapeJsonString(draftMatch[1]).trim();
-  const rawSentiment = cleaned
-    .match(/"sentiment"\s*:\s*"(\w+)"/i)?.[1]
-    ?.toLowerCase();
-  const sentiment =
-    rawSentiment === "positive" || rawSentiment === "negative"
-      ? rawSentiment
-      : "neutral";
-  return { draftText, sentiment };
+  const candidates = [
+    cleaned,
+    cleaned
+      .replace(/\\"/g, '"')
+      .replace(/\\s[*+?]/g, " ")
+      .replace(/\^\s*|\s*\$\s*"?$/g, "")
+      .trim(),
+  ];
+  for (const candidate of candidates) {
+    const draftMatch = candidate.match(/"draftText"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+    if (!draftMatch) continue;
+    const draftText = unescapeJsonString(draftMatch[1])
+      .replace(/\\s[*+?]/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (!draftText || /["\\]+\s*draftText/i.test(draftText)) continue;
+    const rawSentiment = candidate
+      .match(/"sentiment"\s*:\s*"(\w+)"/i)?.[1]
+      ?.toLowerCase();
+    const sentiment =
+      rawSentiment === "positive" || rawSentiment === "negative"
+        ? rawSentiment
+        : "neutral";
+    return { draftText, sentiment };
+  }
+  return null;
+}
+
+/** Response blobs must never be served as review text. */
+function looksLikeResponseBlob(text: string): boolean {
+  return (
+    /\bdraftText\b/.test(text) ||
+    /"sentiment"\s*:/.test(text) ||
+    /^\s*r?"\^/.test(text) ||
+    /\\s[*+?]/.test(text)
+  );
 }
 
 function parseDraftJson(text: string, qas: QA[] = []): GeminiDraftResult {
@@ -705,6 +732,10 @@ function parseDraftJson(text: string, qas: QA[] = []): GeminiDraftResult {
       sentiment,
       answers
     );
+    // Paranoia: never serve text that still looks like a response blob.
+    if (looksLikeResponseBlob(draftText)) {
+      return { draftText: "", sentiment };
+    }
     return { draftText, sentiment };
   };
 
@@ -722,10 +753,10 @@ function parseDraftJson(text: string, qas: QA[] = []): GeminiDraftResult {
         return toResult(extracted.draftText, extracted.sentiment);
       }
       // Not JSON-shaped at all — the model answered with plain text.
-      if (!cleaned.startsWith("{")) {
+      if (!cleaned.startsWith("{") && !looksLikeResponseBlob(cleaned)) {
         return { draftText: humanizeReview(cleaned, answersText), sentiment: "neutral" };
       }
-      // A JSON blob we can't salvage — never show it to the customer.
+      // A JSON/blob fragment we can't salvage — never show it to the customer.
       return { draftText: "", sentiment: "neutral" };
     }
   }
