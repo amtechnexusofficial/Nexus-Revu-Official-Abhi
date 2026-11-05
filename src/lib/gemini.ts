@@ -81,6 +81,19 @@ function buildGenerationConfig(
   };
   if (options?.json) {
     generationConfig.responseMimeType = "application/json";
+    // Constrained decoding — output is guaranteed to match this shape,
+    // so malformed JSON / regex blobs can't be emitted at all.
+    generationConfig.responseSchema = {
+      type: "OBJECT",
+      properties: {
+        draftText: { type: "STRING" },
+        sentiment: {
+          type: "STRING",
+          enum: ["positive", "neutral", "negative"],
+        },
+      },
+      required: ["draftText", "sentiment"],
+    };
   }
   // Only 3.6 Flash uses thinkingLevel. Lite models reject thinkingBudget: 0.
   if (isGemini36Model(model)) {

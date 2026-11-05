@@ -73,6 +73,19 @@ export async function getBacklogStatus(businessId: string) {
   const refillAfter = business?.backlogRefillAfter ?? null;
   const cooldownActive = Boolean(refillAfter && refillAfter.getTime() > Date.now());
 
+  // Draft texts are returned for the admin dashboard only — the backlog API
+  // is behind admin auth + business ownership, so QR scanners never see these.
+  const drafts = await db
+    .select({
+      id: reviewBacklog.id,
+      draftText: reviewBacklog.draftText,
+      sentiment: reviewBacklog.sentiment,
+      createdAt: reviewBacklog.createdAt,
+    })
+    .from(reviewBacklog)
+    .where(eq(reviewBacklog.businessId, businessId))
+    .orderBy(asc(reviewBacklog.createdAt));
+
   return {
     total,
     target: BACKLOG_TOTAL,
@@ -80,6 +93,7 @@ export async function getBacklogStatus(businessId: string) {
     targets: BACKLOG_TARGETS,
     refillAfter,
     cooldownActive,
+    drafts,
   };
 }
 

@@ -94,6 +94,7 @@ export default function BusinessDetailPage({
     bySentiment: { positive: number; neutral: number; negative: number };
     cooldownActive: boolean;
     refillAfter: string | null;
+    drafts: { id: string; draftText: string; sentiment: string; createdAt: string }[];
   } | null>(null);
   const [loadingBacklog, setLoadingBacklog] = useState(false);
   const [backlogMessage, setBacklogMessage] = useState<string | null>(null);
@@ -105,6 +106,7 @@ export default function BusinessDetailPage({
     bySentiment: { positive: number; neutral: number; negative: number };
     cooldownActive: boolean;
     refillAfter?: string | Date | null;
+    drafts?: { id: string; draftText: string; sentiment: string; createdAt: string }[];
   }) {
     setBacklog({
       total: data.total,
@@ -112,6 +114,7 @@ export default function BusinessDetailPage({
       bySentiment: data.bySentiment,
       cooldownActive: data.cooldownActive,
       refillAfter: data.refillAfter ? String(data.refillAfter) : null,
+      drafts: data.drafts ?? [],
     });
   }
 
@@ -792,6 +795,29 @@ export default function BusinessDetailPage({
                   </p>
                 </div>
               </div>
+              {backlog && backlog.drafts.length > 0 && (
+                <ul className="mt-3 flex flex-col gap-2">
+                  {backlog.drafts.map((d) => (
+                    <li
+                      key={d.id}
+                      className="rounded-xl border border-ink/8 bg-white px-3 py-2"
+                    >
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                          d.sentiment === "positive"
+                            ? "bg-emerald-50 text-emerald-800"
+                            : d.sentiment === "negative"
+                              ? "bg-red-50 text-red-700"
+                              : "bg-amber-50 text-amber-800"
+                        }`}
+                      >
+                        {d.sentiment}
+                      </span>
+                      <p className="mt-1 text-sm leading-relaxed text-ink/75">{d.draftText}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
               {backlog?.cooldownActive && (
                 <p className="mt-2 text-xs text-ink/50">
                   Auto-refill is cooling down after an API failure
